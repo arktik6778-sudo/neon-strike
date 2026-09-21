@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<title>Yash First Game — NEON STRIKE</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ======================= WEBGL ERROR SCREEN ======================= -->
+  <div id="webgl-error" class="overlay hidden">
+    <div class="panel">
+      <h1 class="glitch-title">SIGNAL LOST</h1>
+      <p>Your browser or graphics driver does not support WebGL, which NEON STRIKE needs to render.</p>
+      <p class="dim">Try updating your browser, enabling hardware acceleration, or using a different device.</p>
+    </div>
+  </div>
+
+  <!-- ======================= MAIN MENU ======================= -->
+  <div id="main-menu" class="overlay">
+    <div class="menu-bg-grid"></div>
+    <div class="menu-content">
+      <h1 class="glitch-title" data-text="NEON STRIKE">NEON STRIKE</h1>
+      <p class="subtitle">TACTICAL ARENA COMBAT</p>
+
+      <div class="menu-panel">
+        <div class="mode-select">
+          <label class="mode-label">MATCH MODE</label>
+          <div class="mode-options" id="mode-options">
+            <button class="mode-btn active" data-mode="ffa">FREE-FOR-ALL</button>
+            <button class="mode-btn" data-mode="tdm">TEAM DEATHMATCH</button>
+            <button class="mode-btn" data-mode="practice">PRACTICE</button>
+          </div>
+        </div>
+
+        <button id="btn-play" class="btn btn-primary">▶ DEPLOY</button>
+        <button id="btn-settings" class="btn">⚙ SETTINGS</button>
+
+        <div class="controls-box">
+          <div class="controls-title">CONTROLS</div>
+          <div class="controls-grid">
+            <span>WASD</span><span>Move</span>
+            <span>MOUSE</span><span>Look</span>
+            <span>LMB</span><span>Fire</span>
+            <span>RMB</span><span>Aim Down Sights</span>
+            <span>R</span><span>Reload</span>
+            <span>SHIFT</span><span>Sprint</span>
+            <span>CTRL</span><span>Crouch</span>
+            <span>SPACE</span><span>Jump</span>
+            <span>1-3</span><span>Switch Weapon</span>
+            <span>ESC</span><span>Pause</span>
+          </div>
+          <p class="dim touch-hint">Drag right side to look · left joystick to move · on-screen buttons to fire, jump, aim, sprint, crouch &amp; reload.</p>
+        </div>
+      </div>
+      <div class="footer-tag">v1.0 — ORIGINAL ARENA BUILD</div>
+    </div>
+  </div>
+
+  <!-- ======================= SETTINGS ======================= -->
+  <div id="settings-menu" class="overlay hidden">
+    <div class="menu-content">
+      <h2 class="section-title">SETTINGS</h2>
+      <div class="menu-panel settings-panel">
+
+        <div class="setting-row">
+          <label>Mouse Sensitivity</label>
+          <input type="range" id="setting-sensitivity" min="1" max="20" value="8" />
+          <span id="val-sensitivity" class="setting-val">8</span>
+        </div>
+
+        <div class="setting-row">
+          <label>Master Volume</label>
+          <input type="range" id="setting-volume" min="0" max="100" value="60" />
+          <span id="val-volume" class="setting-val">60</span>
+        </div>
+
+        <div class="setting-row">
+          <label>Graphics Quality</label>
+          <select id="setting-graphics">
+            <option value="low">LOW</option>
+            <option value="medium" selected>MEDIUM</option>
+            <option value="high">HIGH</option>
+          </select>
+        </div>
+
+        <div class="setting-row">
+          <label>Crosshair Color</label>
+          <div class="crosshair-colors" id="crosshair-colors">
+            <button class="ch-swatch active" data-color="#00f0ff" style="background:#00f0ff"></button>
+            <button class="ch-swatch" data-color="#ff2d55" style="background:#ff2d55"></button>
+            <button class="ch-swatch" data-color="#ff9500" style="background:#ff9500"></button>
+            <button class="ch-swatch" data-color="#39ff6a" style="background:#39ff6a"></button>
+            <button class="ch-swatch" data-color="#ffffff" style="background:#ffffff"></button>
+          </div>
+        </div>
+
+        <button id="btn-settings-back" class="btn btn-primary">BACK</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======================= HUD (in-game) ======================= -->
+  <div id="hud" class="hidden">
+
+    <!-- Crosshair -->
+    <div id="crosshair">
+      <span class="ch-line ch-top"></span>
+      <span class="ch-line ch-bottom"></span>
+      <span class="ch-line ch-left"></span>
+      <span class="ch-line ch-right"></span>
+      <span class="ch-dot"></span>
+    </div>
+
+    <!-- Hit marker -->
+    <div id="hitmarker"></div>
+
+    <!-- Damage vignette flash -->
+    <div id="damage-flash"></div>
+
+    <!-- Top bar: timer + score -->
+    <div id="top-bar">
+      <div id="match-timer">02:30</div>
+      <div id="score-line"><span id="kill-count">0</span> K &nbsp;/&nbsp; <span id="death-count">0</span> D</div>
+    </div>
+
+    <!-- Kill feed -->
+    <div id="kill-feed"></div>
+
+    <!-- Enemy status panel: live roster of bots with health -->
+    <div id="enemy-status">
+      <div class="enemy-status-title">HOSTILES</div>
+      <div id="enemy-status-list"></div>
+    </div>
+
+    <!-- Bottom left: health/armor -->
+    <div id="vitals">
+      <div class="vital-row">
+        <span class="vital-icon armor-icon">◆</span>
+        <div class="vital-bar-track"><div id="armor-bar" class="vital-bar armor-fill"></div></div>
+        <span id="armor-val" class="vital-num">0</span>
+      </div>
+      <div class="vital-row">
+        <span class="vital-icon health-icon">♥</span>
+        <div class="vital-bar-track"><div id="health-bar" class="vital-bar health-fill"></div></div>
+        <span id="health-val" class="vital-num">100</span>
+      </div>
+    </div>
+
+    <!-- Bottom right: weapon/ammo -->
+    <div id="weapon-hud">
+      <div id="weapon-name">ASSAULT RIFLE</div>
+      <div id="ammo-line"><span id="ammo-mag">30</span> / <span id="ammo-reserve">90</span></div>
+      <div id="weapon-slots">
+        <span class="slot active" data-slot="1">1 RIFLE</span>
+        <span class="slot" data-slot="2">2 SMG</span>
+        <span class="slot" data-slot="3">3 SNIPER</span>
+      </div>
+    </div>
+
+    <div id="reload-indicator" class="hidden">RELOADING…</div>
+    <div id="center-msg"></div>
+
+    <!-- ======================= MOBILE / TOUCH CONTROLS ======================= -->
+    <div id="mobile-controls">
+      <div id="look-zone"></div>
+
+      <div id="joystick-zone">
+        <div id="joystick-base"><div id="joystick-knob"></div></div>
+      </div>
+
+      <div id="mobile-weapon-slots">
+        <button class="mobile-weapon-btn active" data-slot="0">1</button>
+        <button class="mobile-weapon-btn" data-slot="1">2</button>
+        <button class="mobile-weapon-btn" data-slot="2">3</button>
+      </div>
+
+      <button id="btn-touch-pause" class="mobile-btn pause-btn">⏸</button>
+
+      <div id="mobile-action-buttons">
+        <button id="btn-touch-ads" class="mobile-btn action-btn">ADS</button>
+        <button id="btn-touch-sprint" class="mobile-btn action-btn">SPRINT</button>
+        <button id="btn-touch-crouch" class="mobile-btn action-btn">CROUCH</button>
+        <button id="btn-touch-reload" class="mobile-btn action-btn">RELOAD</button>
+      </div>
+
+      <button id="btn-touch-jump" class="mobile-btn jump-btn">JUMP</button>
+      <button id="btn-touch-fire" class="mobile-btn fire-btn">FIRE</button>
+    </div>
+  </div>
+
+  <!-- ======================= PAUSE ======================= -->
+  <div id="pause-menu" class="overlay hidden">
+    <div class="menu-content">
+      <h2 class="section-title">PAUSED</h2>
+      <div class="menu-panel">
+        <button id="btn-resume" class="btn btn-primary">▶ RESUME</button>
+        <button id="btn-pause-settings" class="btn">⚙ SETTINGS</button>
+        <button id="btn-quit" class="btn btn-danger">✕ QUIT TO MENU</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======================= MATCH END ======================= -->
+  <div id="end-screen" class="overlay hidden">
+    <div class="menu-content">
+      <h2 id="end-title" class="section-title">MATCH COMPLETE</h2>
+      <div class="menu-panel">
+        <div id="end-stats" class="end-stats"></div>
+        <button id="btn-rematch" class="btn btn-primary">▶ REMATCH</button>
+        <button id="btn-end-menu" class="btn">MAIN MENU</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Pointer lock prompt -->
+  <div id="click-prompt" class="overlay hidden">
+    <div class="panel"><h2>CLICK TO ENGAGE</h2><p class="dim">Mouse look requires pointer lock</p></div>
+  </div>
+
+  <canvas id="game-canvas"></canvas>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="main.js"></script>
+</body>
+</html>
