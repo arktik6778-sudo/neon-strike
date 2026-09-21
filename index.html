@@ -2,8 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-<title>Yash First Game — NEON STRIKE</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>NEON STRIKE — Tactical Arena FPS</title>
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -34,6 +34,14 @@
           </div>
         </div>
 
+        <div class="mode-select">
+          <label class="mode-label">MAP</label>
+          <div class="mode-options" id="map-options">
+            <button class="mode-btn active" data-map="gridlock">GRIDLOCK</button>
+            <button class="mode-btn" data-map="foundry">FOUNDRY</button>
+          </div>
+        </div>
+
         <button id="btn-play" class="btn btn-primary">▶ DEPLOY</button>
         <button id="btn-settings" class="btn">⚙ SETTINGS</button>
 
@@ -47,11 +55,11 @@
             <span>R</span><span>Reload</span>
             <span>SHIFT</span><span>Sprint</span>
             <span>CTRL</span><span>Crouch</span>
-            <span>SPACE</span><span>Jump</span>
+            <span>SPACE</span><span>Jump / Climb Ledge</span>
+            <span>Q / E</span><span>Lean (Take Cover)</span>
             <span>1-3</span><span>Switch Weapon</span>
             <span>ESC</span><span>Pause</span>
           </div>
-          <p class="dim touch-hint">Drag right side to look · left joystick to move · on-screen buttons to fire, jump, aim, sprint, crouch &amp; reload.</p>
         </div>
       </div>
       <div class="footer-tag">v1.0 — ORIGINAL ARENA BUILD</div>
@@ -96,6 +104,30 @@
           </div>
         </div>
 
+        <div class="setting-row">
+          <label>Player Skin</label>
+          <div class="crosshair-colors" id="skin-colors">
+            <button class="ch-swatch active" data-color="#00f0ff" style="background:#00f0ff"></button>
+            <button class="ch-swatch" data-color="#ff2d55" style="background:#ff2d55"></button>
+            <button class="ch-swatch" data-color="#ff9500" style="background:#ff9500"></button>
+            <button class="ch-swatch" data-color="#39ff6a" style="background:#39ff6a"></button>
+            <button class="ch-swatch" data-color="#b060ff" style="background:#b060ff"></button>
+            <button class="ch-swatch" data-color="#ffe066" style="background:#ffe066"></button>
+          </div>
+        </div>
+
+        <div class="controls-box keybind-box">
+          <div class="controls-title">KEY BINDINGS — click a key, then press a new one</div>
+          <div id="keybind-list" class="keybind-grid"></div>
+          <button id="btn-reset-binds" class="btn" style="margin-top:10px;">RESET TO DEFAULTS</button>
+        </div>
+
+        <div class="controls-box mobile-only-row" id="mobile-hud-settings">
+          <div class="controls-title">MOBILE HUD</div>
+          <p class="dim" style="margin:0 0 10px;">Drag buttons anywhere on screen to fit your grip.</p>
+          <button id="btn-customize-hud" class="btn">✋ CUSTOMIZE LAYOUT</button>
+        </div>
+
         <button id="btn-settings-back" class="btn btn-primary">BACK</button>
       </div>
     </div>
@@ -115,6 +147,18 @@
 
     <!-- Hit marker -->
     <div id="hitmarker"></div>
+
+    <!-- Sniper scope overlay: circular vignette mask + reticle, shown only
+         while aiming down sights with the sniper rifle. -->
+    <div id="scope-overlay">
+      <div class="scope-line scope-h"></div>
+      <div class="scope-line scope-v"></div>
+      <div class="scope-dot"></div>
+      <div class="scope-tick tick-l1"></div><div class="scope-tick tick-l2"></div>
+      <div class="scope-tick tick-r1"></div><div class="scope-tick tick-r2"></div>
+      <div class="scope-tick tick-t1"></div><div class="scope-tick tick-t2"></div>
+      <div class="scope-tick tick-b1"></div><div class="scope-tick tick-b2"></div>
+    </div>
 
     <!-- Damage vignette flash -->
     <div id="damage-flash"></div>
@@ -161,33 +205,6 @@
 
     <div id="reload-indicator" class="hidden">RELOADING…</div>
     <div id="center-msg"></div>
-
-    <!-- ======================= MOBILE / TOUCH CONTROLS ======================= -->
-    <div id="mobile-controls">
-      <div id="look-zone"></div>
-
-      <div id="joystick-zone">
-        <div id="joystick-base"><div id="joystick-knob"></div></div>
-      </div>
-
-      <div id="mobile-weapon-slots">
-        <button class="mobile-weapon-btn active" data-slot="0">1</button>
-        <button class="mobile-weapon-btn" data-slot="1">2</button>
-        <button class="mobile-weapon-btn" data-slot="2">3</button>
-      </div>
-
-      <button id="btn-touch-pause" class="mobile-btn pause-btn">⏸</button>
-
-      <div id="mobile-action-buttons">
-        <button id="btn-touch-ads" class="mobile-btn action-btn">ADS</button>
-        <button id="btn-touch-sprint" class="mobile-btn action-btn">SPRINT</button>
-        <button id="btn-touch-crouch" class="mobile-btn action-btn">CROUCH</button>
-        <button id="btn-touch-reload" class="mobile-btn action-btn">RELOAD</button>
-      </div>
-
-      <button id="btn-touch-jump" class="mobile-btn jump-btn">JUMP</button>
-      <button id="btn-touch-fire" class="mobile-btn fire-btn">FIRE</button>
-    </div>
   </div>
 
   <!-- ======================= PAUSE ======================= -->
@@ -219,9 +236,78 @@
     <div class="panel"><h2>CLICK TO ENGAGE</h2><p class="dim">Mouse look requires pointer lock</p></div>
   </div>
 
+  <!-- ======================= MOBILE / TOUCH CONTROLS ======================= -->
+  <!-- Hidden by default; shown via JS (adds "touch-device" to <body>) only on touch-capable devices. -->
+  <div id="mobile-controls" class="hidden">
+
+    <!-- Full-screen drag-to-look surface (sits under the buttons/joystick below) -->
+    <div id="touch-look-zone"></div>
+
+    <!-- Left thumb: movement joystick + lean peek buttons -->
+    <div id="touch-lean">
+      <button id="lean-left" class="touch-btn small">◀</button>
+      <button id="lean-right" class="touch-btn small">▶</button>
+    </div>
+    <div id="touch-joystick">
+      <div id="joystick-knob"></div>
+    </div>
+
+    <!-- Right thumb: combat actions -->
+    <div id="touch-actions">
+      <button id="touch-sprint" class="touch-btn pill">SPRINT</button>
+      <button id="touch-crouch" class="touch-btn pill">CROUCH</button>
+      <button id="touch-reload" class="touch-btn round">R</button>
+      <button id="touch-jump" class="touch-btn round">▲</button>
+      <button id="touch-weapon-switch" class="touch-btn round weapon-switch-btn">⇄</button>
+      <button id="touch-fire" class="touch-btn fire-btn">FIRE</button>
+    </div>
+
+    <!-- Top-left corner: ADS, on its own so it never gets bumped by fire/reload/jump -->
+    <button id="touch-ads" class="touch-btn round ads-btn">ADS</button>
+
+    <!-- Top corner: pause -->
+    <button id="touch-pause" class="touch-btn round small">‖</button>
+
+    <!-- HUD customization toolbar — shown only while editing button layout -->
+    <div id="hud-edit-toolbar" class="hidden">
+      <div class="edit-hint">DRAG BUTTONS TO REPOSITION</div>
+      <div class="edit-toolbar-btns">
+        <button id="btn-edit-reset" class="btn">RESET</button>
+        <button id="btn-edit-done" class="btn btn-primary">DONE</button>
+      </div>
+    </div>
+  </div>
+
   <canvas id="game-canvas"></canvas>
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-  <script src="main.js"></script>
+  <!-- Robust engine loader: tries several CDN mirrors for Three.js in sequence
+       before giving up, since a single blocked/unreachable CDN (ad-blocker,
+       corporate firewall, flaky connection) shouldn't take the whole game down.
+       main.js is only injected once THREE is confirmed available. -->
+  <script>
+    (function loadEngine(sources, i) {
+      if (i >= sources.length) {
+        // All mirrors failed — let main.js's own "ENGINE FAILED TO LOAD" check
+        // handle showing the on-screen error once it loads with THREE undefined.
+        var m = document.createElement("script");
+        m.src = "main.js";
+        document.body.appendChild(m);
+        return;
+      }
+      var s = document.createElement("script");
+      s.src = sources[i];
+      s.onload = function () {
+        var m = document.createElement("script");
+        m.src = "main.js";
+        document.body.appendChild(m);
+      };
+      s.onerror = function () { loadEngine(sources, i + 1); };
+      document.body.appendChild(s);
+    })([
+      "https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js",
+      "https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js",
+      "https://unpkg.com/three@0.128.0/build/three.min.js"
+    ], 0);
+  </script>
 </body>
 </html>

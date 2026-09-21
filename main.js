@@ -35,20 +35,98 @@
     return;
   }
 
+  // The engine (Three.js) loads from a CDN <script> tag in index.html. If that request
+  // is blocked (ad-blocker, offline, CDN hiccup) or hasn't finished yet, THREE will be
+  // undefined and every line below would throw — silently killing the whole script
+  // before any menu button ever gets wired up. Fail loudly and visibly instead.
+  if (typeof THREE === "undefined") {
+    const err = document.getElementById("webgl-error");
+    err.querySelector("h1").textContent = "ENGINE FAILED TO LOAD";
+    err.querySelector("p").textContent =
+      "NEON STRIKE couldn't load its 3D engine (Three.js) from the CDN.";
+    const dim = err.querySelector(".dim");
+    if (dim) dim.textContent = "Check your internet connection, disable any ad-blocker/script-blocker for this page, then reload.";
+    err.classList.remove("hidden");
+    document.getElementById("main-menu").classList.add("hidden");
+    return;
+  }
+
+  // Safety net: if anything below throws during setup (or later, inside the render
+  // loop), surface it on screen instead of leaving a dead page with unresponsive
+  // buttons and no explanation.
+  window.addEventListener("error", (e) => {
+    console.error("NEON STRIKE runtime error:", e.error || e.message);
+    const err = document.getElementById("webgl-error");
+    if (!err.classList.contains("hidden")) return; // already showing a fault screen
+    err.querySelector("h1").textContent = "SYSTEM FAULT";
+    err.querySelector("p").textContent = "NEON STRIKE hit an unexpected error and had to stop.";
+    const dim = err.querySelector(".dim");
+    if (dim) dim.textContent = String((e.error && e.error.message) || e.message || "Unknown error") + " — try reloading the page.";
+    err.classList.remove("hidden");
+  });
+
+  try {
+
   /* ==========================================================================
      2. GLOBAL STATE & SETTINGS
      ========================================================================== */
+  const isMobile = ("ontouchstart" in window) || navigator.maxTouchPoints > 0 ||
+    /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+  if (isMobile) document.body.classList.add("touch-device");
+
   const Settings = {
     sensitivity: 8,    // 1-20
     volume: 0.6,       // 0-1
     graphics: "medium", // low|medium|high
     crosshairColor: "#00f0ff",
+    skinColor: "#00f0ff",
   };
+
+  // Customizable key bindings — every gameplay key check below reads from this
+  // object (via e.code strings) rather than hardcoding a key, so rebinding one
+  // action from Settings takes effect everywhere immediately, including for
+  // the mobile touch buttons that drive the same logical inputs.
+  const DEFAULT_BINDINGS = {
+    forward: "KeyW", back: "KeyS", left: "KeyA", right: "KeyD",
+    jump: "Space", crouch: "ControlLeft", sprint: "ShiftLeft",
+    reload: "KeyR", leanLeft: "KeyQ", leanRight: "KeyE",
+    weapon1: "Digit1", weapon2: "Digit2", weapon3: "Digit3",
+    pause: "Escape",
+  };
+  const BINDING_LABELS = {
+    forward: "Move Forward", back: "Move Back", left: "Move Left", right: "Move Right",
+    jump: "Jump / Climb", crouch: "Crouch", sprint: "Sprint",
+    reload: "Reload", leanLeft: "Lean Left", leanRight: "Lean Right",
+    weapon1: "Weapon Slot 1", weapon2: "Weapon Slot 2", weapon3: "Weapon Slot 3",
+    pause: "Pause",
+  };
+  const KEY_DISPLAY = {
+    Space: "SPACE", ControlLeft: "CTRL", ShiftLeft: "SHIFT", Escape: "ESC",
+    Digit1: "1", Digit2: "2", Digit3: "3",
+  };
+  function keyDisplayName(code) {
+    if (!code) return "—";
+    if (KEY_DISPLAY[code]) return KEY_DISPLAY[code];
+    if (code.startsWith("Key")) return code.slice(3);
+    if (code.startsWith("Digit")) return code.slice(5);
+    return code;
+  }
+  let Bindings = { ...DEFAULT_BINDINGS };
+  (function loadSavedBindings() {
+    try {
+      const saved = JSON.parse(localStorage.getItem("neonstrike_bindings") || "null");
+      if (saved) Bindings = { ...DEFAULT_BINDINGS, ...saved };
+    } catch (e) { /* ignore corrupt/unavailable storage */ }
+  })();
+  function saveBindings() {
+    try { localStorage.setItem("neonstrike_bindings", JSON.stringify(Bindings)); } catch (e) { /* ignore */ }
+  }
 
   const Game = {
     running: false,
     paused: false,
     mode: "ffa",        // ffa | tdm | practice
+    map: "gridlock",    // gridlock | foundry
     matchTime: 150,      // seconds
     timeLeft: 150,
     kills: 0,
@@ -56,10 +134,6 @@
     scoreLimit: 20,
     ended: false,
   };
-
-  // Touch/mobile detection — drives on-screen control visibility and input handling.
-  const isTouchDevice = ("ontouchstart" in window) || navigator.maxTouchPoints > 0;
-  if (isTouchDevice) document.body.classList.add("is-touch");
 
   const clock = new THREE.Clock();
 
@@ -137,10 +211,19 @@
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  // Filmic tone mapping + sRGB output give materials richer contrast and more
+  // natural highlight roll-off than the flat linear default — a cheap but
+  // noticeable visual-quality boost with no extra geometry/fragment cost.
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.05;
 
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x05070a);
-  scene.fog = new THREE.FogExp2(0x05070a, 0.028);
+  // Bright daytime sky + matching linear fog (fades in gradually with distance
+  // rather than the old dense exponential night fog) so the arena reads as an
+  // open-air daylight complex instead of a dark interior.
+  scene.background = new THREE.Color(0x9fd4f0);
+  scene.fog = new THREE.Fog(0xbfe4f5, 35, 150);
 
   const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 500);
   const EYE_HEIGHT = 1.7, CROUCH_HEIGHT = 1.0;
@@ -151,28 +234,38 @@
   camera.add(weaponRig);
   scene.add(camera);
 
-  // Lighting: dim ambient + hemisphere for neon industrial mood, plus colored point lights
-  scene.add(new THREE.HemisphereLight(0x2b4a66, 0x0a0a10, 0.55));
-  const sun = new THREE.DirectionalLight(0x8fd6ff, 0.35);
-  sun.position.set(30, 50, -20);
+  // Lighting: bright daytime sky/ground hemisphere + a strong warm sun casting
+  // soft shadows; the scattered colored point lights (added per-map below)
+  // still read clearly as neon accents against the daylight base.
+  scene.add(new THREE.HemisphereLight(0xbfe0ff, 0x6b5d4a, 0.85));
+  const sun = new THREE.DirectionalLight(0xfff3d6, 1.15);
+  sun.position.set(40, 65, -25);
   sun.castShadow = true;
-  sun.shadow.mapSize.set(1024, 1024);
-  sun.shadow.camera.left = -40; sun.shadow.camera.right = 40;
-  sun.shadow.camera.top = 40; sun.shadow.camera.bottom = -40;
+  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.camera.left = -55; sun.shadow.camera.right = 55;
+  sun.shadow.camera.top = 55; sun.shadow.camera.bottom = -55;
+  sun.shadow.camera.far = 160;
+  sun.shadow.bias = -0.0015;
   scene.add(sun);
+  scene.add(new THREE.AmbientLight(0xdcefff, 0.25)); // gentle fill so shadowed faces aren't pure black
 
   function addAccentLight(x, y, z, color, intensity, dist) {
     const l = new THREE.PointLight(color, intensity, dist);
     l.position.set(x, y, z);
     scene.add(l);
+    mapMeshes.push(l);
     return l;
   }
 
   /* ==========================================================================
-     5. MAP CONSTRUCTION — original compact urban/sci-fi arena
+     5. MAP CONSTRUCTION — original compact urban/sci-fi arenas.
+     Two selectable original layouts (GRIDLOCK / FOUNDRY) share the same
+     helper functions below; loadMap() clears whichever is currently built
+     and constructs the requested one, so maps can be swapped between matches.
      ========================================================================== */
-  const solidBoxes = [];   // THREE.Box3 for wall/building collision (XZ)
-  const groundTops = [];   // {box2D:{minX,maxX,minZ,maxZ}, y: topHeight} for standable surfaces
+  const solidBoxes = [];   // THREE.Box3 for wall/building collision (XZ) — cleared & rebuilt per map
+  const groundTops = [];   // {minX,maxX,minZ,maxZ,y} standable surfaces — cleared & rebuilt per map
+  let mapMeshes = [];       // every object created for the current map, so it can be torn down cleanly
 
   function makeBox(w, h, d, x, y, z, color, opts = {}) {
     const geo = new THREE.BoxGeometry(w, h, d);
@@ -184,6 +277,7 @@
     mesh.position.set(x, y, z);
     mesh.castShadow = true; mesh.receiveShadow = true;
     scene.add(mesh);
+    mapMeshes.push(mesh);
 
     if (opts.collide !== false) {
       const box = new THREE.Box3().setFromObject(mesh);
@@ -204,10 +298,24 @@
     const mesh = new THREE.Mesh(geo, mat);
     mesh.position.set(x, y, z);
     scene.add(mesh);
+    mapMeshes.push(mesh);
     return mesh;
   }
 
-  function buildMap() {
+  // Tears down every object belonging to the currently-built map and resets
+  // the collision/standable-surface data, so a fresh map can be built in its place.
+  function clearMap() {
+    mapMeshes.forEach((obj) => {
+      scene.remove(obj);
+      if (obj.geometry) obj.geometry.dispose();
+      if (obj.material) obj.material.dispose();
+    });
+    mapMeshes = [];
+    solidBoxes.length = 0;
+    groundTops.length = 0;
+  }
+
+  function buildMapGridlock() {
     // Ground
     const groundGeo = new THREE.PlaneGeometry(100, 100);
     const groundMat = new THREE.MeshStandardMaterial({ color: 0x11161c, roughness: 0.95, metalness: 0.1 });
@@ -215,12 +323,14 @@
     ground.rotation.x = -Math.PI / 2;
     ground.receiveShadow = true;
     scene.add(ground);
+    mapMeshes.push(ground);
     groundTops.push({ minX: -50, maxX: 50, minZ: -50, maxZ: 50, y: 0 });
 
     // Floor grid accent lines (visual only)
     const grid = new THREE.GridHelper(100, 50, 0x1a5f73, 0x0d2530);
     grid.position.y = 0.01;
     scene.add(grid);
+    mapMeshes.push(grid);
 
     // Perimeter walls
     makeBox(100, 6, 1, 0, 3, -50, 0x161c24, { emissive: 0x0a2a33, emissiveIntensity: 0.3 });
@@ -299,32 +409,149 @@
 
     // Recompute solid boxes slightly shrunk vertically doesn't matter for XZ collision.
   }
-  buildMap();
 
-  // Patrol waypoints spread across the arena (open areas, corridors, near cover) — bots wander between
-  // these when they don't have a player to chase, giving more varied and natural movement than just
-  // walking between the (sparser) spawn points.
-  const PATROL_WAYPOINTS = [
-    [0, 0], [0, 14], [0, -14], [14, 0], [-14, 0],
-    [22, 22], [-22, -22], [22, -22], [-22, 22],
-    [10, 18], [-10, 18], [10, -18], [-10, -18],
-    [30, 10], [-30, -10], [30, -10], [-30, 10],
-    [18, 8], [-18, -8], [18, -8], [-18, 8],
-    [0, 30], [0, -30],
-  ];
-  function randomPatrolPoint() {
-    const p = PATROL_WAYPOINTS[Math.floor(Math.random() * PATROL_WAYPOINTS.length)];
+  // ---- Second original layout: FOUNDRY — an industrial cross-shaped complex with
+  // tighter corridors, a raised gantry walkway, and open yards on two sides. ----
+  function buildMapFoundry() {
+    const groundGeo = new THREE.PlaneGeometry(100, 100);
+    const groundMat = new THREE.MeshStandardMaterial({ color: 0x141210, roughness: 0.95, metalness: 0.1 });
+    const ground = new THREE.Mesh(groundGeo, groundMat);
+    ground.rotation.x = -Math.PI / 2;
+    ground.receiveShadow = true;
+    scene.add(ground);
+    mapMeshes.push(ground);
+    groundTops.push({ minX: -50, maxX: 50, minZ: -50, maxZ: 50, y: 0 });
+
+    const grid = new THREE.GridHelper(100, 50, 0x734a1a, 0x2a1c0d);
+    grid.position.y = 0.01;
+    scene.add(grid);
+    mapMeshes.push(grid);
+
+    // Perimeter walls
+    makeBox(100, 6, 1, 0, 3, -50, 0x1e1a16, { emissive: 0x3a2410, emissiveIntensity: 0.3 });
+    makeBox(100, 6, 1, 0, 3, 50, 0x1e1a16, { emissive: 0x3a2410, emissiveIntensity: 0.3 });
+    makeBox(1, 6, 100, -50, 3, 0, 0x1e1a16, { emissive: 0x3a2410, emissiveIntensity: 0.3 });
+    makeBox(1, 6, 100, 50, 3, 0, 0x1e1a16, { emissive: 0x3a2410, emissiveIntensity: 0.3 });
+
+    // Cross-shaped central foundry hall: one long wing east-west, one north-south
+    makeBox(34, 7, 8, 0, 3.5, 0, 0x241c16, { emissive: 0xff5a00, emissiveIntensity: 0.18 });
+    makeBox(8, 7, 34, 0, 3.5, 0, 0x241c16, { emissive: 0x00b3cc, emissiveIntensity: 0.18 });
+    neonStrip(34.2, 0.15, 0.15, 0, 6.9, 4.05, 0xff9500);
+    neonStrip(0.15, 0.15, 34.2, 4.05, 6.9, 0, 0x00e5ff);
+
+    // Raised gantry walkway crossing above the hall (accessible via the ramp stacks below)
+    makeBox(30, 0.6, 3, 0, 5.6, 0, 0x2a2018, { emissive: 0xff9500, emissiveIntensity: 0.25 });
+    for (let i = 0; i < 7; i++) {
+      const stepY = 0.4 + i * 0.72;
+      makeBox(2.6, 0.72, 1.6, -14 - i * 1.5, stepY / 2, -14, 0x201a14, { emissive: 0xff9500, emissiveIntensity: 0.15 });
+    }
+    for (let i = 0; i < 7; i++) {
+      const stepY = 0.4 + i * 0.72;
+      makeBox(2.6, 0.72, 1.6, 14 + i * 1.5, stepY / 2, 14, 0x201a14, { emissive: 0x00e5ff, emissiveIntensity: 0.15 });
+    }
+
+    // Four corner storage yards (open areas with low cover, different footprint from Gridlock)
+    const yardCorners = [[-36, -36], [36, -36], [-36, 36], [36, 36]];
+    yardCorners.forEach(([x, z], i) => {
+      makeBox(10, 4 + (i % 2) * 1.5, 10, x, (4 + (i % 2) * 1.5) / 2, z, 0x1c1712, { emissive: 0x3a2410, emissiveIntensity: 0.2 });
+    });
+
+    // Corridor wings connecting the yards to the central hall
+    makeBox(16, 3.4, 4, -26, 1.7, -20, 0x1a1510, { emissive: 0xff5a00, emissiveIntensity: 0.15 });
+    makeBox(16, 3.4, 4, 26, 1.7, 20, 0x1a1510, { emissive: 0x00b3cc, emissiveIntensity: 0.15 });
+    makeBox(4, 3.4, 16, -20, 1.7, 26, 0x1a1510, { emissive: 0xff5a00, emissiveIntensity: 0.15 });
+    makeBox(4, 3.4, 16, 20, 1.7, -26, 0x1a1510, { emissive: 0x00b3cc, emissiveIntensity: 0.15 });
+
+    // Scattered crates / drums for cover in the yards and corridors
+    const crates = [
+      [-36, -20], [-20, -36], [36, 20], [20, 36],
+      [-10, -6], [10, 6], [-6, 10], [6, -10],
+      [-30, 0], [30, 0], [0, -30], [0, 30],
+      [-14, -30], [14, 30], [-30, 14], [30, -14],
+    ];
+    crates.forEach(([x, z], i) => {
+      const h = 1.2 + (i % 3) * 0.35;
+      makeBox(2, h, 2, x, h / 2, z, 0x2a2118, { emissive: i % 2 ? 0xff5a00 : 0x00b3cc, emissiveIntensity: 0.16 });
+    });
+
+    // Accent lighting
+    addAccentLight(0, 6, 0, 0xff9500, 1.2, 32);
+    addAccentLight(-36, 8, -36, 0xff5a00, 1.0, 22);
+    addAccentLight(36, 8, 36, 0x00e5ff, 1.0, 22);
+    addAccentLight(-14, 7, -14, 0xff9500, 0.8, 18);
+    addAccentLight(14, 7, 14, 0x00e5ff, 0.8, 18);
+  }
+
+  // Spawn points split per team so, in Team Deathmatch, the player's squad
+  // spawns together on one side of the map and the enemy team spawns on the
+  // opposite side (Free-for-all / Practice draw from both sides combined).
+  const MAP_SPAWNS = {
+    gridlock: {
+      blue: [[-40, 0], [-40, -40], [-40, 40], [-20, -30], [0, 40]],
+      red: [[40, 0], [40, 40], [40, -40], [20, 30], [0, -40]],
+    },
+    foundry: {
+      blue: [[-36, -36], [-36, 36], [-44, 0], [-26, 20], [0, 44]],
+      red: [[36, -36], [36, 36], [44, 0], [26, -20], [0, -44]],
+    },
+  };
+  // Patrol waypoints, similarly biased to each team's side of the map, with a
+  // shared set of central points both teams contest so fights don't only
+  // happen right at the spawns.
+  const MAP_PATROL = {
+    gridlock: {
+      blue: [
+        [-14, 0], [-22, -22], [-22, 22], [-10, 18], [-10, -18],
+        [-30, -10], [-30, 10], [-18, -8], [-18, 8],
+        [0, 0], [0, 14], [0, -14], [0, 30], [0, -30],
+      ],
+      red: [
+        [14, 0], [22, 22], [22, -22], [10, 18], [10, -18],
+        [30, 10], [30, -10], [18, 8], [18, -8],
+        [0, 0], [0, 14], [0, -14], [0, 30], [0, -30],
+      ],
+    },
+    foundry: {
+      blue: [
+        [-14, 0], [-36, -20], [-20, -36], [-30, 0], [-14, -30], [-30, 14], [-36, -36], [-36, 36],
+        [0, 0], [0, -14], [0, 14], [0, -30], [0, 30],
+      ],
+      red: [
+        [14, 0], [36, 20], [20, 36], [30, 0], [14, 30], [30, -14], [36, -36], [36, 36],
+        [0, 0], [0, -14], [0, 14], [0, -30], [0, 30],
+      ],
+    },
+  };
+
+  let currentMapId = "gridlock";
+
+  // Tears down the current map and builds the requested one, then resets the
+  // spawn / patrol waypoint lists that bots and the player use for that layout.
+  function loadMap(id) {
+    clearMap();
+    if (id === "foundry") buildMapFoundry();
+    else buildMapGridlock();
+    currentMapId = id;
+  }
+  loadMap(Game.map);
+
+  // team: "blue" | "red" | undefined. In TDM, a team pulls only from its own
+  // side; otherwise (FFA/Practice, or no team given) the full map is used.
+  function randomPatrolPoint(team) {
+    const mapData = MAP_PATROL[currentMapId] || MAP_PATROL.gridlock;
+    const list = (Game.mode === "tdm" && (team === "blue" || team === "red"))
+      ? mapData[team]
+      : [...mapData.blue, ...mapData.red];
+    const p = list[Math.floor(Math.random() * list.length)];
     return new THREE.Vector3(p[0] + (Math.random() - 0.5) * 4, 0, p[1] + (Math.random() - 0.5) * 4);
   }
 
-  // Spawn points (player + bots), spread around the arena
-  const SPAWN_POINTS = [
-    [40, 0], [-40, 0], [0, 40], [0, -40],
-    [40, 40], [-40, -40], [40, -40], [-40, 40],
-    [20, 30], [-20, -30],
-  ];
-  function randomSpawn() {
-    const p = SPAWN_POINTS[Math.floor(Math.random() * SPAWN_POINTS.length)];
+  function randomSpawn(team) {
+    const mapData = MAP_SPAWNS[currentMapId] || MAP_SPAWNS.gridlock;
+    const list = (Game.mode === "tdm" && (team === "blue" || team === "red"))
+      ? mapData[team]
+      : [...mapData.blue, ...mapData.red];
+    const p = list[Math.floor(Math.random() * list.length)];
     return new THREE.Vector3(p[0], 0, p[1]);
   }
 
@@ -354,6 +581,17 @@
   const WEAPON_ORDER = ["rifle", "smg", "sniper"];
 
   // Build a simple viewmodel mesh per weapon (procedural, original design — no external assets)
+  // Shared "skin" material — a colored trim/wristband on every weapon that the
+  // player can recolor from Settings without affecting weapon-specific accent
+  // colors (which stay tied to each gun's muzzle flash / tracer color for clarity).
+  const skinMat = new THREE.MeshStandardMaterial({
+    color: 0x00f0ff, emissive: 0x00f0ff, emissiveIntensity: 0.6, metalness: 0.4, roughness: 0.3,
+  });
+  function applyPlayerSkin(hexColor) {
+    skinMat.color.set(hexColor);
+    skinMat.emissive.set(hexColor);
+  }
+
   function buildViewModel(def) {
     const g = new THREE.Group();
     const bodyMat = new THREE.MeshStandardMaterial({ color: 0x20242b, metalness: 0.6, roughness: 0.4 });
@@ -381,6 +619,13 @@
     const mag = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.18, 0.06), accentMat);
     mag.position.set(0, -0.13, -bodyLen * 0.35);
     g.add(mag);
+
+    // Player-customizable skin trim: a small glowing band on the grip/stock, always
+    // visible regardless of weapon, so the chosen skin color reads clearly in first person.
+    const skinTrim = new THREE.Mesh(new THREE.BoxGeometry(0.075, 0.025, 0.03), skinMat);
+    skinTrim.position.set(0, -0.045, -0.02);
+    skinTrim.rotation.x = 0.25;
+    g.add(skinTrim);
 
     g.position.set(0.22, -0.2, -0.42);
     g.rotation.y = 0.02;
@@ -510,17 +755,23 @@
     currentWeaponIdx: 0,
     ammo: {}, reserve: {},
     reloading: false,
+    reloadStart: 0, reloadDuration: 0,
     lastShotTime: 0,
     footstepTimer: 0,
     radius: 0.5,
     bobT: 0,
+    // Ledge-climb (mantle)
+    mantling: false, mantleFrom: new THREE.Vector3(), mantleTo: new THREE.Vector3(), mantleT: 0,
+    // Lean / take-cover
+    lean: 0, // smoothed -1 (left) .. 1 (right)
+    scoped: false,
   };
 
   function currentWeaponKey() { return WEAPON_ORDER[Player.currentWeaponIdx]; }
   function currentWeapon() { return WEAPONS[currentWeaponKey()]; }
 
   function resetPlayer() {
-    const sp = randomSpawn();
+    const sp = randomSpawn(Player.team);
     Player.pos.copy(sp);
     Player.velY = 0;
     Player.health = 100;
@@ -534,14 +785,23 @@
   }
 
   const keys = {};
+  let listeningForBind = null; // set while the Settings UI is waiting for a key press to rebind
   window.addEventListener("keydown", (e) => {
+    if (listeningForBind) {
+      e.preventDefault();
+      Bindings[listeningForBind] = e.code;
+      saveBindings();
+      renderKeybindList();
+      listeningForBind = null;
+      return;
+    }
     keys[e.code] = true;
     if (!Game.running || Game.paused) return;
-    if (e.code === "KeyR") startReload();
-    if (e.code === "Digit1") equipWeapon(0);
-    if (e.code === "Digit2") equipWeapon(1);
-    if (e.code === "Digit3") equipWeapon(2);
-    if (e.code === "Space") tryJump();
+    if (e.code === Bindings.reload) startReload();
+    if (e.code === Bindings.weapon1) equipWeapon(0);
+    if (e.code === Bindings.weapon2) equipWeapon(1);
+    if (e.code === Bindings.weapon3) equipWeapon(2);
+    if (e.code === Bindings.jump) { if (!tryMantle()) tryJump(); }
   });
   window.addEventListener("keyup", (e) => { keys[e.code] = false; });
 
@@ -553,18 +813,48 @@
   function switchWeaponVisual() {
     WEAPON_ORDER.forEach((k, i) => viewModels[k].visible = i === Player.currentWeaponIdx);
     document.querySelectorAll(".slot").forEach((el, i) => el.classList.toggle("active", i === Player.currentWeaponIdx));
-    document.querySelectorAll(".mobile-weapon-btn").forEach((el) => el.classList.toggle("active", +el.dataset.slot === Player.currentWeaponIdx));
     document.getElementById("weapon-name").textContent = currentWeapon().label;
     document.getElementById("reload-indicator").classList.add("hidden");
     updateAmmoHUD();
   }
 
   function tryJump() {
-    if (Player.onGround && Player.alive && !Player.crouching) {
+    if (Player.onGround && Player.alive && !Player.crouching && !Player.mantling) {
       Player.velY = 5.2;
       Player.onGround = false;
       AudioEngine.jump();
     }
+  }
+
+  // Ledge-climb ("mantle"): looks a short distance ahead of the player, in the
+  // direction they're facing, for a standable surface (a crate, low wall, or
+  // platform edge) that's higher than their feet but still within reach. If one
+  // is found, the player smoothly climbs up onto it instead of just jumping.
+  const MANTLE_MIN_HEIGHT = 0.35, MANTLE_MAX_HEIGHT = 1.7, MANTLE_REACH = 0.9, MANTLE_DURATION = 0.32;
+  function findMantleTarget() {
+    const fwd = new THREE.Vector3(-Math.sin(Player.yaw), 0, -Math.cos(Player.yaw));
+    const checkPoint = Player.pos.clone().addScaledVector(fwd, MANTLE_REACH);
+    for (const g of groundTops) {
+      if (checkPoint.x >= g.minX && checkPoint.x <= g.maxX && checkPoint.z >= g.minZ && checkPoint.z <= g.maxZ) {
+        const heightDiff = g.y - Player.pos.y;
+        if (heightDiff >= MANTLE_MIN_HEIGHT && heightDiff <= MANTLE_MAX_HEIGHT) {
+          return new THREE.Vector3(checkPoint.x, g.y, checkPoint.z);
+        }
+      }
+    }
+    return null;
+  }
+  function tryMantle() {
+    if (!Player.alive || Player.mantling || !Player.onGround) return false;
+    const target = findMantleTarget();
+    if (!target) return false;
+    Player.mantling = true;
+    Player.mantleFrom.copy(Player.pos);
+    Player.mantleTo.copy(target);
+    Player.mantleT = 0;
+    Player.velY = 0;
+    AudioEngine.jump();
+    return true;
   }
 
   function startReload() {
@@ -572,6 +862,8 @@
     const w = WEAPONS[wk];
     if (Player.reloading || Player.ammo[wk] >= w.magSize || Player.reserve[wk] <= 0) return;
     Player.reloading = true;
+    Player.reloadStart = performance.now();
+    Player.reloadDuration = w.reloadTimeMs;
     document.getElementById("reload-indicator").classList.remove("hidden");
     AudioEngine.reload();
     setTimeout(() => {
@@ -593,12 +885,9 @@
 
   // Mouse look via pointer lock
   let mouseDown = false, rightDown = false;
-  // Touch control state (joystick vector + toggles), used alongside keys[] on mobile.
-  const joystickVec = { x: 0, y: 0 };
-  let touchSprintActive = false, touchCrouchActive = false;
   document.addEventListener("mousemove", (e) => {
     if (document.pointerLockElement !== canvas || Game.paused || !Game.running) return;
-    const sens = Settings.sensitivity * 0.0011;
+    const sens = Settings.sensitivity * 0.0011 * (Player.scoped ? 0.35 : 1);
     Player.yaw -= e.movementX * sens;
     Player.pitch -= e.movementY * sens;
     Player.pitch = Math.max(-Math.PI / 2 + 0.05, Math.min(Math.PI / 2 - 0.05, Player.pitch));
@@ -618,7 +907,12 @@
     const w = WEAPONS[wk];
     if (!Player.alive || Player.reloading) return;
     if (now - Player.lastShotTime < w.fireRateMs) return;
-    if (Player.ammo[wk] <= 0) { AudioEngine.empty(); return; }
+    if (Player.ammo[wk] <= 0) {
+      // Auto-reload: an empty trigger pull starts the reload automatically
+      // (if there's reserve ammo) instead of just clicking dry — R still works too.
+      if (Player.reserve[wk] > 0) startReload(); else AudioEngine.empty();
+      return;
+    }
     Player.lastShotTime = now;
     Player.ammo[wk]--;
     updateAmmoHUD();
@@ -627,6 +921,11 @@
     applyRecoil(w);
     fireRaycast(w);
     kickViewmodel();
+    // Also auto-reload the instant the mag empties from this shot, so the
+    // player doesn't have to pull the trigger again on a dry chamber first.
+    if (Player.ammo[wk] === 0 && Player.reserve[wk] > 0) {
+      setTimeout(() => { if (!Player.reloading && currentWeaponKey() === wk && Player.ammo[wk] === 0) startReload(); }, 350);
+    }
   }
 
   let recoilPitch = 0, recoilYaw = 0;
@@ -655,8 +954,8 @@
     raycaster.set(origin, dir);
     raycaster.far = 200;
 
-    // Gather targetable meshes: bot hit meshes + solid world meshes
-    // (skip bots on the player's own team in TDM — no friendly fire)
+    // Gather targetable meshes: hostile bots only (in TDM, teammates aren't
+    // shootable — no friendly fire) plus solid world meshes.
     const targets = [];
     Bots.list.forEach((b) => {
       if (!b.alive) return;
@@ -713,6 +1012,9 @@
   }
   function playerDie() {
     Player.alive = false;
+    Player.scoped = false;
+    rightDown = false;
+    document.getElementById("scope-overlay").classList.remove("show");
     Game.deaths++;
     document.getElementById("death-count").textContent = Game.deaths;
     centerMessage("ELIMINATED");
@@ -772,11 +1074,9 @@
 
   function updatePlayer(dt) {
     if (!Player.alive) return;
-    const joystickActive = joystickVec.x !== 0 || joystickVec.y !== 0;
-    const anyMoveInput = keys.KeyW || keys.KeyA || keys.KeyS || keys.KeyD || joystickActive;
-    Player.crouching = !!(keys.ControlLeft || keys.ControlRight || touchCrouchActive);
-    Player.sprinting = (keys.ShiftLeft || keys.ShiftRight || touchSprintActive) && !Player.crouching && anyMoveInput;
     Player.aiming = rightDown && !Player.sprinting;
+    Player.sprinting = keys[Bindings.sprint] && !Player.crouching && (keys[Bindings.forward] || keys[Bindings.left] || keys[Bindings.back] || keys[Bindings.right]);
+    Player.crouching = !!keys[Bindings.crouch];
 
     // recoil recovery
     recoilPitch *= 0.9; recoilYaw *= 0.85;
@@ -785,19 +1085,41 @@
     camera.rotation.y = Player.yaw + recoilYaw;
     camera.rotation.x = Player.pitch + recoilPitch;
 
-    // movement input — proper forward/right from yaw
+    // Ledge-climb in progress: interpolate position up onto the ledge and skip
+    // normal movement/gravity/collision for this frame.
+    if (Player.mantling) {
+      Player.mantleT += dt / MANTLE_DURATION;
+      if (Player.mantleT >= 1) {
+        Player.pos.copy(Player.mantleTo);
+        Player.mantling = false;
+        Player.onGround = true;
+        Player.velY = 0;
+      } else {
+        const t = Player.mantleT;
+        const ease = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+        Player.pos.lerpVectors(Player.mantleFrom, Player.mantleTo, ease);
+        Player.pos.y += Math.sin(Math.PI * t) * 0.15; // slight arc for a natural climb feel
+      }
+      camera.position.set(Player.pos.x, Player.pos.y + (Player.crouching ? CROUCH_HEIGHT : EYE_HEIGHT), Player.pos.z);
+      updateHUDVitals();
+      return;
+    }
+
+    // movement input
+    const forward = new THREE.Vector3(Math.sin(Player.yaw), 0, -Math.cos(-Player.yaw) * -1);
+    // build proper forward/right from yaw
     const fwd = new THREE.Vector3(-Math.sin(Player.yaw), 0, -Math.cos(Player.yaw));
     const right = new THREE.Vector3(Math.cos(Player.yaw), 0, -Math.sin(Player.yaw));
     let move = new THREE.Vector3();
-    if (keys.KeyW) move.add(fwd);
-    if (keys.KeyS) move.sub(fwd);
-    if (keys.KeyD) move.add(right);
-    if (keys.KeyA) move.sub(right);
-    if (joystickActive) {
-      move.addScaledVector(fwd, joystickVec.y);
-      move.addScaledVector(right, joystickVec.x);
-    }
-    if (move.lengthSq() > 0) move.normalize();
+    if (keys[Bindings.forward]) move.add(fwd);
+    if (keys[Bindings.back]) move.sub(fwd);
+    if (keys[Bindings.right]) move.add(right);
+    if (keys[Bindings.left]) move.sub(right);
+    // Mobile joystick — analog input blended in additively, only normalized if it
+    // would push total magnitude over 1 so a gentle tilt still moves at partial speed.
+    move.addScaledVector(fwd, -TouchInput.move.y);
+    move.addScaledVector(right, TouchInput.move.x);
+    if (move.length() > 1) move.normalize();
 
     let speed = Player.crouching ? 2.4 : Player.sprinting ? 7.2 : 4.4;
     if (Player.aiming) speed *= 0.65;
@@ -829,14 +1151,43 @@
     const bobY = Math.sin(Player.bobT) * (Player.crouching ? 0.02 : 0.045);
     camera.position.set(Player.pos.x, Player.pos.y + targetHeight + bobY, Player.pos.z);
 
-    // ADS weapon offset
+    // Lean / take-cover: hold Q to lean left or E to lean right, peeking the
+    // camera sideways around a corner or over low cover without exposing the
+    // player's whole body — release to snap back upright.
+    const leanTarget = (keys[Bindings.leanLeft] && !keys[Bindings.leanRight]) ? -1 : (keys[Bindings.leanRight] && !keys[Bindings.leanLeft]) ? 1 : 0;
+    Player.lean += (leanTarget - Player.lean) * 0.18;
+    if (Math.abs(Player.lean) > 0.001) {
+      camera.position.addScaledVector(right, Player.lean * 0.5);
+      camera.position.y -= Math.abs(Player.lean) * 0.06;
+    }
+    camera.rotation.z = -Player.lean * 0.13;
+
+    // ADS weapon offset — the sniper gets a true scope (tight zoom + reticle
+    // overlay, weapon model hidden) instead of the normal hip-raised ADS.
     const vm = viewModels[currentWeaponKey()];
+    const isScoped = Player.aiming && currentWeaponKey() === "sniper";
     const targetX = Player.aiming ? 0 : vm.userData.baseX;
-    const targetZFov = Player.aiming ? 55 : 75;
+    const targetZFov = isScoped ? 12 : Player.aiming ? 55 : 75;
     vm.position.x += (targetX - vm.position.x) * 0.25;
-    camera.fov += (targetZFov - camera.fov) * 0.2;
+    camera.fov += (targetZFov - camera.fov) * (isScoped ? 0.35 : 0.2);
     camera.updateProjectionMatrix();
     document.getElementById("crosshair").classList.toggle("ads", Player.aiming);
+    vm.visible = !isScoped;
+    document.getElementById("scope-overlay").classList.toggle("show", isScoped);
+    Player.scoped = isScoped;
+
+    // Reload animation: the weapon dips down and tilts as the mag comes out,
+    // then rises back to its resting pose as the fresh mag seats — timed to
+    // exactly match the weapon's reload duration, no matter how long it is.
+    if (Player.reloading) {
+      const t = Math.min(1, (performance.now() - Player.reloadStart) / Player.reloadDuration);
+      const dip = Math.sin(Math.PI * t) * 0.14;
+      vm.position.y = vm.userData.baseY - dip;
+      vm.rotation.x = dip * 1.5;
+    } else {
+      vm.position.y += (vm.userData.baseY - vm.position.y) * 0.3;
+      vm.rotation.x += (0 - vm.rotation.x) * 0.3;
+    }
 
     // fire input (auto vs semi)
     const now = performance.now();
@@ -881,7 +1232,7 @@
 
     scene.add(group);
 
-    const sp = randomSpawn();
+    const sp = randomSpawn(team);
     group.position.copy(sp);
 
     // ---- Floating health bar (billboard, always faces the camera) ----
@@ -924,7 +1275,7 @@
       team,
       health: 100, maxHealth: 100, alive: true,
       state: "patrol",
-      target: randomPatrolPoint(),
+      target: randomPatrolPoint(team),
       lastShot: 0, weapon: WEAPONS.rifle,
       respawnAt: 0,
       speed: 2.6,
@@ -983,7 +1334,7 @@
   }
 
   function respawnBot(bot) {
-    const sp = randomSpawn();
+    const sp = randomSpawn(bot.team);
     bot.group.position.copy(sp);
     bot.group.position.y = 0;
     bot.group.rotation.z = 0;
@@ -1037,7 +1388,7 @@
       bot.lastSeenPlayerAt = now;
     } else if (bot.state === "chase" && now - (bot.lastSeenPlayerAt || 0) > 2500) {
       bot.state = "patrol";
-      bot.target = randomPatrolPoint();
+      bot.target = randomPatrolPoint(bot.team);
     }
 
     if (bot.state === "chase") {
@@ -1074,7 +1425,7 @@
       const dir = bot.target.clone().sub(bot.group.position); dir.y = 0;
       const dist = dir.length();
       if (dist < 1.5) {
-        bot.target = randomPatrolPoint();
+        bot.target = randomPatrolPoint(bot.team);
       } else {
         dir.normalize();
         bot.group.position.addScaledVector(dir, bot.speed * 0.55 * dt);
@@ -1083,7 +1434,7 @@
       const movedDist = bot.group.position.distanceTo(bot.lastPos);
       if (movedDist < 0.03) {
         bot.stuckTimer += dt;
-        if (bot.stuckTimer > 1.2) { bot.target = randomPatrolPoint(); bot.stuckTimer = 0; }
+        if (bot.stuckTimer > 1.2) { bot.target = randomPatrolPoint(bot.team); bot.stuckTimer = 0; }
       } else {
         bot.stuckTimer = 0;
       }
@@ -1091,9 +1442,6 @@
 
     bot.lastPos.copy(bot.group.position);
     resolveCollision(bot.group.position);
-    // Snap bots onto ramps/platforms the same way the player does, so they
-    // aren't permanently stuck at ground level.
-    bot.group.position.y = groundHeightAt(bot.group.position.x, bot.group.position.z, bot.group.position.y);
     updateBotHealthBar(bot);
   }
 
@@ -1194,9 +1542,9 @@
   }
 
   // ---- Main menu ----
-  document.querySelectorAll(".mode-btn").forEach((btn) => {
+  document.querySelectorAll(".mode-btn[data-mode]").forEach((btn) => {
     btn.addEventListener("click", () => {
-      document.querySelectorAll(".mode-btn").forEach((b) => b.classList.remove("active"));
+      document.querySelectorAll(".mode-btn[data-mode]").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
       Game.mode = btn.dataset.mode;
     });
@@ -1218,46 +1566,113 @@
   }
 
   // Settings controls
+  function saveSettings() {
+    try { localStorage.setItem("neonstrike_settings", JSON.stringify(Settings)); } catch (e) { /* ignore */ }
+  }
   const sensSlider = document.getElementById("setting-sensitivity");
-  sensSlider.addEventListener("input", () => { Settings.sensitivity = +sensSlider.value; document.getElementById("val-sensitivity").textContent = sensSlider.value; });
+  sensSlider.addEventListener("input", () => { Settings.sensitivity = +sensSlider.value; document.getElementById("val-sensitivity").textContent = sensSlider.value; saveSettings(); });
   const volSlider = document.getElementById("setting-volume");
-  volSlider.addEventListener("input", () => { Settings.volume = +volSlider.value / 100; document.getElementById("val-volume").textContent = volSlider.value; });
+  volSlider.addEventListener("input", () => { Settings.volume = +volSlider.value / 100; document.getElementById("val-volume").textContent = volSlider.value; saveSettings(); });
   document.getElementById("setting-graphics").addEventListener("change", (e) => {
     Settings.graphics = e.target.value;
     applyGraphicsQuality();
+    saveSettings();
   });
-  document.querySelectorAll(".ch-swatch").forEach((sw) => {
+  document.querySelectorAll("#crosshair-colors .ch-swatch").forEach((sw) => {
     sw.addEventListener("click", () => {
-      document.querySelectorAll(".ch-swatch").forEach((s) => s.classList.remove("active"));
+      document.querySelectorAll("#crosshair-colors .ch-swatch").forEach((s) => s.classList.remove("active"));
       sw.classList.add("active");
       Settings.crosshairColor = sw.dataset.color;
       document.documentElement.style.setProperty("--crosshair-color", Settings.crosshairColor);
+      saveSettings();
     });
   });
+  document.querySelectorAll("#skin-colors .ch-swatch").forEach((sw) => {
+    sw.addEventListener("click", () => {
+      document.querySelectorAll("#skin-colors .ch-swatch").forEach((s) => s.classList.remove("active"));
+      sw.classList.add("active");
+      Settings.skinColor = sw.dataset.color;
+      applyPlayerSkin(Settings.skinColor);
+      saveSettings();
+    });
+  });
+  // Restore any previously saved settings and reflect them in the UI.
+  (function loadSavedSettings() {
+    try {
+      const saved = JSON.parse(localStorage.getItem("neonstrike_settings") || "null");
+      if (!saved) return;
+      Object.assign(Settings, saved);
+      sensSlider.value = Settings.sensitivity;
+      document.getElementById("val-sensitivity").textContent = Settings.sensitivity;
+      volSlider.value = Math.round(Settings.volume * 100);
+      document.getElementById("val-volume").textContent = Math.round(Settings.volume * 100);
+      document.getElementById("setting-graphics").value = Settings.graphics;
+      document.querySelectorAll("#crosshair-colors .ch-swatch").forEach((s) => s.classList.toggle("active", s.dataset.color === Settings.crosshairColor));
+      document.querySelectorAll("#skin-colors .ch-swatch").forEach((s) => s.classList.toggle("active", s.dataset.color === Settings.skinColor));
+      document.documentElement.style.setProperty("--crosshair-color", Settings.crosshairColor);
+      applyPlayerSkin(Settings.skinColor);
+    } catch (e) { /* ignore corrupt/unavailable storage */ }
+  })();
+  document.querySelectorAll(".mode-btn[data-map]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".mode-btn[data-map]").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      Game.map = btn.dataset.map;
+    });
+  });
+
+  // ---- Key bindings UI: renders one row per action; clicking a row's button
+  // arms `listeningForBind`, and the next keydown anywhere (captured at the
+  // top of the global keydown handler) assigns that key and re-renders. ----
+  function renderKeybindList() {
+    const list = document.getElementById("keybind-list");
+    list.innerHTML = "";
+    Object.keys(DEFAULT_BINDINGS).forEach((action) => {
+      const row = document.createElement("div");
+      row.className = "keybind-row";
+      const label = document.createElement("span");
+      label.textContent = BINDING_LABELS[action];
+      const btn = document.createElement("button");
+      btn.className = "keybind-btn";
+      btn.textContent = keyDisplayName(Bindings[action]);
+      btn.addEventListener("click", () => {
+        if (listeningForBind === action) { listeningForBind = null; renderKeybindList(); return; }
+        listeningForBind = action;
+        renderKeybindList();
+      });
+      if (listeningForBind === action) { btn.classList.add("listening"); btn.textContent = "PRESS A KEY…"; }
+      row.appendChild(label); row.appendChild(btn);
+      list.appendChild(row);
+    });
+  }
+  renderKeybindList();
+  document.getElementById("btn-reset-binds").addEventListener("click", () => {
+    Bindings = { ...DEFAULT_BINDINGS };
+    saveBindings();
+    listeningForBind = null;
+    renderKeybindList();
+  });
+
   function applyGraphicsQuality() {
     if (Settings.graphics === "low") {
       renderer.setPixelRatio(1);
       renderer.shadowMap.enabled = false;
-      scene.fog.density = 0.045;
+      scene.fog.near = 15; scene.fog.far = 90;
     } else if (Settings.graphics === "medium") {
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
       renderer.shadowMap.enabled = true;
-      scene.fog.density = 0.028;
+      scene.fog.near = 35; scene.fog.far = 150;
     } else {
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       renderer.shadowMap.enabled = true;
-      scene.fog.density = 0.02;
+      scene.fog.near = 45; scene.fog.far = 180;
     }
   }
 
   // ---- Pause ----
   document.getElementById("btn-resume").addEventListener("click", () => {
-    if (isTouchDevice) {
-      Game.paused = false;
-      document.getElementById("pause-menu").classList.add("hidden");
-    } else {
-      canvas.requestPointerLock();
-    }
+    if (isMobile) { Game.paused = false; document.getElementById("pause-menu").classList.add("hidden"); }
+    else canvas.requestPointerLock();
   });
   document.getElementById("btn-quit").addEventListener("click", quitToMenu);
   document.getElementById("btn-rematch").addEventListener("click", () => { document.getElementById("end-screen").classList.add("hidden"); startGame(); });
@@ -1268,6 +1683,7 @@
     Game.paused = false;
     document.exitPointerLock();
     document.getElementById("hud").classList.add("hidden");
+    document.getElementById("mobile-controls").classList.add("hidden");
     document.getElementById("pause-menu").classList.add("hidden");
     document.getElementById("end-screen").classList.add("hidden");
     document.getElementById("main-menu").classList.remove("hidden");
@@ -1286,11 +1702,16 @@
     document.getElementById("kill-count").textContent = 0;
     document.getElementById("death-count").textContent = 0;
     document.getElementById("match-timer").textContent = Game.mode === "practice" ? "∞" : formatTime(Game.timeLeft);
+    if (currentMapId !== Game.map) loadMap(Game.map);
     resetPlayer();
     spawnAllBots();
     applyGraphicsQuality();
     document.getElementById("hud").classList.remove("hidden");
-    if (!isTouchDevice) canvas.requestPointerLock();
+    if (isMobile) {
+      document.getElementById("mobile-controls").classList.remove("hidden");
+    } else {
+      canvas.requestPointerLock();
+    }
   }
 
   function endMatch(title) {
@@ -1302,12 +1723,13 @@
     document.getElementById("end-stats").innerHTML =
       `<div>KILLS: <b>${Game.kills}</b></div><div>DEATHS: <b>${Game.deaths}</b></div><div>MODE: <b>${Game.mode.toUpperCase()}</b></div>`;
     document.getElementById("hud").classList.add("hidden");
+    document.getElementById("mobile-controls").classList.add("hidden");
     document.getElementById("end-screen").classList.remove("hidden");
   }
 
-  // ---- Pointer lock handling (desktop/mouse only — touch devices skip pointer lock entirely) ----
+  // ---- Pointer lock handling (desktop only — mobile uses touch controls & the pause button) ----
   document.addEventListener("pointerlockchange", () => {
-    if (isTouchDevice) return;
+    if (isMobile) return;
     if (document.pointerLockElement === canvas) {
       Game.paused = false;
       document.getElementById("pause-menu").classList.add("hidden");
@@ -1318,146 +1740,279 @@
     }
   });
   canvas.addEventListener("click", () => {
-    if (isTouchDevice) return;
-    if (Game.running && !Game.paused && document.pointerLockElement !== canvas) canvas.requestPointerLock();
+    if (!isMobile && Game.running && !Game.paused && document.pointerLockElement !== canvas) canvas.requestPointerLock();
   });
   window.addEventListener("keydown", (e) => {
-    if (e.code === "Escape" && Game.running) {
+    if (e.code === Bindings.pause && Game.running) {
       if (document.pointerLockElement === canvas) document.exitPointerLock();
     }
   });
 
   /* ==========================================================================
-     10b. MOBILE / TOUCH CONTROLS
-     Floating joystick (movement) + drag-look zone + on-screen action buttons.
-     Only wired up when a touch-capable device is detected; harmless no-op
-     listeners otherwise since the elements stay hidden via CSS.
+     11.5 MOBILE / TOUCH CONTROLS
+     A virtual joystick drives movement, a full-screen drag zone drives look,
+     and on-screen buttons map straight onto the same `keys` object / functions
+     the keyboard uses — so no gameplay logic is duplicated for touch.
      ========================================================================== */
-  (function setupMobileControls() {
-    const joyZone = document.getElementById("joystick-zone");
-    const joyBase = document.getElementById("joystick-base");
-    const joyKnob = document.getElementById("joystick-knob");
-    const lookZone = document.getElementById("look-zone");
-    if (!joyZone || !lookZone) return;
+  const TouchInput = { move: { x: 0, y: 0 } };
 
-    // ---- Floating joystick (movement) ----
-    let joyTouchId = null;
-    let joyCenter = { x: 0, y: 0 };
-    const JOY_MAX_R = 46;
+  if (isMobile) {
+    // Set true while the player is dragging touch buttons around in the HUD
+    // customization screen. Every gameplay touch handler below checks this
+    // first and bails out, so nothing fires while buttons are being moved.
+    let editMode = false;
 
-    joyZone.addEventListener("touchstart", (e) => {
-      if (joyTouchId !== null) return;
+    // ---- Movement joystick (identifier-tracked so it doesn't fight the look drag) ----
+    const joystickBase = document.getElementById("touch-joystick");
+    const joystickKnob = document.getElementById("joystick-knob");
+    let joyTouchId = null, joyCenter = { x: 0, y: 0 };
+    const JOY_RADIUS = 50;
+
+    joystickBase.addEventListener("touchstart", (e) => {
+      if (editMode) return;
+      e.preventDefault();
       const t = e.changedTouches[0];
       joyTouchId = t.identifier;
-      const rect = joyZone.getBoundingClientRect();
-      joyCenter.x = t.clientX; joyCenter.y = t.clientY;
-      joyBase.style.left = (t.clientX - rect.left - joyBase.offsetWidth / 2) + "px";
-      joyBase.style.top = (t.clientY - rect.top - joyBase.offsetHeight / 2) + "px";
-      joyBase.style.opacity = "1";
-      joyKnob.style.transform = "translate(0px,0px)";
-      e.preventDefault();
+      const rect = joystickBase.getBoundingClientRect();
+      joyCenter = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
     }, { passive: false });
 
-    joyZone.addEventListener("touchmove", (e) => {
-      for (const t of e.changedTouches) {
-        if (t.identifier !== joyTouchId) continue;
-        const dx = t.clientX - joyCenter.x, dy = t.clientY - joyCenter.y;
-        const dist = Math.min(Math.hypot(dx, dy), JOY_MAX_R);
-        const angle = Math.atan2(dy, dx);
-        const kx = Math.cos(angle) * dist, ky = Math.sin(angle) * dist;
-        joyKnob.style.transform = `translate(${kx}px, ${ky}px)`;
-        joystickVec.x = kx / JOY_MAX_R;
-        joystickVec.y = -ky / JOY_MAX_R;
-      }
+    function handleJoyMove(e) {
+      if (editMode || joyTouchId === null) return;
+      const t = [...e.changedTouches].find((t) => t.identifier === joyTouchId);
+      if (!t) return;
       e.preventDefault();
-    }, { passive: false });
-
-    function endJoy(e) {
-      for (const t of e.changedTouches) {
-        if (t.identifier !== joyTouchId) continue;
-        joyTouchId = null;
-        joystickVec.x = 0; joystickVec.y = 0;
-        joyBase.style.opacity = "0";
-        joyKnob.style.transform = "translate(0px,0px)";
-      }
+      let dx = t.clientX - joyCenter.x, dy = t.clientY - joyCenter.y;
+      const dist = Math.min(Math.hypot(dx, dy), JOY_RADIUS);
+      const ang = Math.atan2(dy, dx);
+      dx = Math.cos(ang) * dist; dy = Math.sin(ang) * dist;
+      joystickKnob.style.transform = `translate(${dx}px, ${dy}px)`;
+      TouchInput.move.x = dx / JOY_RADIUS;
+      TouchInput.move.y = dy / JOY_RADIUS;
     }
-    joyZone.addEventListener("touchend", endJoy);
-    joyZone.addEventListener("touchcancel", endJoy);
+    function handleJoyEnd(e) {
+      const t = [...e.changedTouches].find((t) => t.identifier === joyTouchId);
+      if (!t) return;
+      joyTouchId = null;
+      TouchInput.move.x = 0; TouchInput.move.y = 0;
+      joystickKnob.style.transform = "translate(0,0)";
+    }
+    window.addEventListener("touchmove", handleJoyMove, { passive: false });
+    window.addEventListener("touchend", handleJoyEnd);
+    window.addEventListener("touchcancel", handleJoyEnd);
 
-    // ---- Drag-look zone (camera yaw/pitch) ----
-    let lookTouchId = null;
-    let lookLast = { x: 0, y: 0 };
-
+    // ---- Drag-to-look (full-screen zone beneath the buttons/joystick) ----
+    const lookZone = document.getElementById("touch-look-zone");
+    let lookTouchId = null, lastLookX = 0, lastLookY = 0;
     lookZone.addEventListener("touchstart", (e) => {
       if (lookTouchId !== null || !Game.running || Game.paused) return;
       const t = e.changedTouches[0];
       lookTouchId = t.identifier;
-      lookLast.x = t.clientX; lookLast.y = t.clientY;
-      e.preventDefault();
-    }, { passive: false });
-
+      lastLookX = t.clientX; lastLookY = t.clientY;
+    }, { passive: true });
     lookZone.addEventListener("touchmove", (e) => {
-      for (const t of e.changedTouches) {
-        if (t.identifier !== lookTouchId) continue;
-        const dx = t.clientX - lookLast.x, dy = t.clientY - lookLast.y;
-        lookLast.x = t.clientX; lookLast.y = t.clientY;
-        if (!Game.running || Game.paused) continue;
-        const sens = Settings.sensitivity * 0.0018;
-        Player.yaw -= dx * sens;
-        Player.pitch -= dy * sens;
-        Player.pitch = Math.max(-Math.PI / 2 + 0.05, Math.min(Math.PI / 2 - 0.05, Player.pitch));
-      }
-      e.preventDefault();
-    }, { passive: false });
-
+      if (lookTouchId === null) return;
+      const t = [...e.changedTouches].find((t) => t.identifier === lookTouchId);
+      if (!t) return;
+      const dx = t.clientX - lastLookX, dy = t.clientY - lastLookY;
+      lastLookX = t.clientX; lastLookY = t.clientY;
+      if (!Game.running || Game.paused) return;
+      const sens = Settings.sensitivity * 0.0016 * (Player.scoped ? 0.35 : 1);
+      Player.yaw -= dx * sens;
+      Player.pitch -= dy * sens;
+      Player.pitch = Math.max(-Math.PI / 2 + 0.05, Math.min(Math.PI / 2 - 0.05, Player.pitch));
+    }, { passive: true });
     function endLook(e) {
-      for (const t of e.changedTouches) if (t.identifier === lookTouchId) lookTouchId = null;
+      const t = [...e.changedTouches].find((t) => t.identifier === lookTouchId);
+      if (t) lookTouchId = null;
     }
     lookZone.addEventListener("touchend", endLook);
     lookZone.addEventListener("touchcancel", endLook);
 
-    // ---- Action buttons ----
-    function bindHold(id, onStart, onEnd) {
+    // ---- Helper: press-and-hold buttons that just toggle a `keys` flag,
+    // reusing exactly the same input path as the equivalent keyboard key.
+    // Looks up the current binding each time so rebinding a key from Settings
+    // is honored immediately, on both keyboard and touch. ----
+    function bindHold(id, action) {
       const el = document.getElementById(id);
-      if (!el) return;
-      el.addEventListener("touchstart", (e) => { el.classList.add("touch-active"); onStart && onStart(); e.preventDefault(); }, { passive: false });
-      el.addEventListener("touchend", (e) => { el.classList.remove("touch-active"); onEnd && onEnd(); e.preventDefault(); }, { passive: false });
-      el.addEventListener("touchcancel", (e) => { el.classList.remove("touch-active"); onEnd && onEnd(); }, { passive: false });
+      el.addEventListener("touchstart", (e) => { if (editMode) return; e.preventDefault(); keys[Bindings[action]] = true; el.classList.add("pressed"); }, { passive: false });
+      const release = () => { keys[Bindings[action]] = false; el.classList.remove("pressed"); };
+      el.addEventListener("touchend", release);
+      el.addEventListener("touchcancel", release);
     }
-    function bindTap(id, onTap) {
+    // ---- Helper: tap-to-toggle buttons (sprint/crouch feel better as toggles on touch) ----
+    function bindToggle(id, action) {
       const el = document.getElementById(id);
-      if (!el) return;
-      el.addEventListener("touchstart", (e) => { el.classList.add("touch-active"); onTap && onTap(); e.preventDefault(); }, { passive: false });
-      el.addEventListener("touchend", (e) => { el.classList.remove("touch-active"); e.preventDefault(); }, { passive: false });
-    }
-
-    bindHold("btn-touch-fire", () => { mouseDown = true; }, () => { mouseDown = false; });
-    bindHold("btn-touch-ads", () => { rightDown = true; }, () => { rightDown = false; });
-    bindTap("btn-touch-jump", () => tryJump());
-    bindTap("btn-touch-reload", () => startReload());
-    bindTap("btn-touch-sprint", () => {
-      touchSprintActive = !touchSprintActive;
-      document.getElementById("btn-touch-sprint").classList.toggle("toggled-on", touchSprintActive);
-    });
-    bindTap("btn-touch-crouch", () => {
-      touchCrouchActive = !touchCrouchActive;
-      document.getElementById("btn-touch-crouch").classList.toggle("toggled-on", touchCrouchActive);
-    });
-    bindTap("btn-touch-pause", () => {
-      if (!Game.running || Game.ended) return;
-      Game.paused = !Game.paused;
-      document.getElementById("pause-menu").classList.toggle("hidden", !Game.paused);
-    });
-
-    document.querySelectorAll(".mobile-weapon-btn").forEach((btn) => {
-      btn.addEventListener("touchstart", (e) => {
-        equipWeapon(+btn.dataset.slot);
-        document.querySelectorAll(".mobile-weapon-btn").forEach((b) => b.classList.remove("active"));
-        btn.classList.add("active");
+      el.addEventListener("touchstart", (e) => {
+        if (editMode) return;
         e.preventDefault();
+        const code = Bindings[action];
+        keys[code] = !keys[code];
+        el.classList.toggle("pressed", !!keys[code]);
       }, { passive: false });
+    }
+
+    bindHold("lean-left", "leanLeft");
+    bindHold("lean-right", "leanRight");
+    bindToggle("touch-sprint", "sprint");
+    bindToggle("touch-crouch", "crouch");
+
+    // Fire (hold) — reuses the same mouseDown flag the desktop LMB sets.
+    const fireBtn = document.getElementById("touch-fire");
+    fireBtn.addEventListener("touchstart", (e) => { if (editMode) return; e.preventDefault(); mouseDown = true; fireBtn.classList.add("pressed"); }, { passive: false });
+    const stopFire = () => { mouseDown = false; fireBtn.classList.remove("pressed"); };
+    fireBtn.addEventListener("touchend", stopFire);
+    fireBtn.addEventListener("touchcancel", stopFire);
+
+    // ADS (hold) — reuses the same rightDown flag the desktop RMB sets. Now its
+    // own button pinned to the top-left corner instead of sitting inside the
+    // right-hand action cluster, so it can't be mistapped for fire/reload.
+    const adsBtn = document.getElementById("touch-ads");
+    adsBtn.addEventListener("touchstart", (e) => { if (editMode) return; e.preventDefault(); rightDown = true; adsBtn.classList.add("pressed"); }, { passive: false });
+    const stopAds = () => { rightDown = false; adsBtn.classList.remove("pressed"); };
+    adsBtn.addEventListener("touchend", stopAds);
+    adsBtn.addEventListener("touchcancel", stopAds);
+
+    // Jump / climb — same mantle-then-jump logic as the Space key.
+    document.getElementById("touch-jump").addEventListener("touchstart", (e) => {
+      if (editMode) return;
+      e.preventDefault();
+      if (!tryMantle()) tryJump();
+    }, { passive: false });
+
+    // Reload
+    document.getElementById("touch-reload").addEventListener("touchstart", (e) => { if (editMode) return; e.preventDefault(); startReload(); }, { passive: false });
+
+    // Dedicated weapon-switch button — cycles rifle → smg → sniper → rifle,
+    // so switching doesn't depend on precisely tapping the small HUD pills.
+    document.getElementById("touch-weapon-switch").addEventListener("touchstart", (e) => {
+      if (editMode) return;
+      e.preventDefault();
+      equipWeapon((Player.currentWeaponIdx + 1) % WEAPON_ORDER.length);
+    }, { passive: false });
+
+    // Weapon slots — tapping the existing HUD slot pills switches weapons on any device.
+    document.querySelectorAll(".slot").forEach((el, i) => {
+      el.style.pointerEvents = "auto";
+      el.addEventListener("touchstart", (e) => { if (editMode) return; e.preventDefault(); equipWeapon(i); });
     });
-  })();
+
+    // Pause
+    document.getElementById("touch-pause").addEventListener("touchstart", (e) => {
+      if (editMode) return;
+      e.preventDefault();
+      if (!Game.running || Game.ended) return;
+      Game.paused = true;
+      document.getElementById("pause-menu").classList.remove("hidden");
+    }, { passive: false });
+
+    // Prevent double-tap-to-zoom / pinch-zoom / pull-to-refresh interfering with play.
+    document.addEventListener("touchmove", (e) => { if (Game.running && !editMode) e.preventDefault(); }, { passive: false });
+
+    /* ------------------------------------------------------------------
+       MOBILE HUD CUSTOMIZATION
+       Lets players drag every touch control to wherever fits their grip
+       (different phones, left/right-handed, tablet vs phone, etc.) and
+       remembers the layout in localStorage. ------------------------------------------------------------------ */
+    const LAYOUT_KEY = "neonstrike_mobile_hud_layout_v1";
+    const DRAG_IDS = [
+      "touch-joystick", "lean-left", "lean-right",
+      "touch-sprint", "touch-crouch", "touch-reload", "touch-jump",
+      "touch-weapon-switch", "touch-fire", "touch-ads", "touch-pause"
+    ];
+
+    function loadHudLayout() {
+      let saved = {};
+      try { saved = JSON.parse(localStorage.getItem(LAYOUT_KEY) || "{}"); } catch (e) { saved = {}; }
+      DRAG_IDS.forEach((id) => {
+        const el = document.getElementById(id);
+        const pos = saved[id];
+        if (!el || !pos) return;
+        el.style.left = pos.left + "px";
+        el.style.top = pos.top + "px";
+        el.style.right = "auto";
+        el.style.bottom = "auto";
+      });
+    }
+    function saveHudLayout() {
+      const layout = {};
+      DRAG_IDS.forEach((id) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const r = el.getBoundingClientRect();
+        layout[id] = { left: Math.round(r.left), top: Math.round(r.top) };
+      });
+      try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout)); } catch (e) {}
+    }
+    function resetHudLayout() {
+      try { localStorage.removeItem(LAYOUT_KEY); } catch (e) {}
+      DRAG_IDS.forEach((id) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.style.left = ""; el.style.top = ""; el.style.right = ""; el.style.bottom = "";
+      });
+    }
+    loadHudLayout();
+
+    // Give every repositionable control its own drag handling. Only live
+    // while editMode is true, and stopPropagation keeps a drag from also
+    // triggering the look-zone drag underneath it.
+    DRAG_IDS.forEach((id) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      let dragTouchId = null, offX = 0, offY = 0;
+      el.addEventListener("touchstart", (e) => {
+        if (!editMode) return;
+        e.preventDefault(); e.stopPropagation();
+        const t = e.changedTouches[0];
+        dragTouchId = t.identifier;
+        const rect = el.getBoundingClientRect();
+        offX = t.clientX - rect.left; offY = t.clientY - rect.top;
+        el.classList.add("dragging");
+      }, { passive: false });
+      el.addEventListener("touchmove", (e) => {
+        if (!editMode || dragTouchId === null) return;
+        const t = [...e.changedTouches].find((t) => t.identifier === dragTouchId);
+        if (!t) return;
+        e.preventDefault(); e.stopPropagation();
+        const nx = Math.max(0, Math.min(window.innerWidth - el.offsetWidth, t.clientX - offX));
+        const ny = Math.max(0, Math.min(window.innerHeight - el.offsetHeight, t.clientY - offY));
+        el.style.left = nx + "px"; el.style.top = ny + "px";
+        el.style.right = "auto"; el.style.bottom = "auto";
+      }, { passive: false });
+      const endDrag = (e) => {
+        if (dragTouchId === null) return;
+        e.stopPropagation();
+        dragTouchId = null;
+        el.classList.remove("dragging");
+      };
+      el.addEventListener("touchend", endDrag);
+      el.addEventListener("touchcancel", endDrag);
+    });
+
+    function enterHudEditMode() {
+      editMode = true;
+      document.getElementById("settings-menu").classList.add("hidden");
+      document.getElementById("mobile-controls").classList.remove("hidden");
+      document.getElementById("hud-edit-toolbar").classList.remove("hidden");
+      document.body.classList.add("hud-edit-mode");
+    }
+    function exitHudEditMode(save) {
+      editMode = false;
+      if (save) saveHudLayout();
+      document.getElementById("hud-edit-toolbar").classList.add("hidden");
+      document.body.classList.remove("hud-edit-mode");
+      if (!Game.running) document.getElementById("mobile-controls").classList.add("hidden");
+      document.getElementById("settings-menu").classList.remove("hidden");
+    }
+
+    const customizeBtn = document.getElementById("btn-customize-hud");
+    if (customizeBtn) customizeBtn.addEventListener("touchstart", (e) => { e.preventDefault(); enterHudEditMode(); });
+    const editDoneBtn = document.getElementById("btn-edit-done");
+    if (editDoneBtn) editDoneBtn.addEventListener("touchstart", (e) => { e.preventDefault(); exitHudEditMode(true); });
+    const editResetBtn = document.getElementById("btn-edit-reset");
+    if (editResetBtn) editResetBtn.addEventListener("touchstart", (e) => { e.preventDefault(); resetHudLayout(); });
+  }
 
   /* ==========================================================================
      11. MAIN GAME LOOP
@@ -1492,4 +2047,17 @@
 
   // Kick off render loop immediately so menu background could later show 3D if desired.
   animate();
+
+  } catch (err) {
+    // Setup failed somewhere in sections 2-11 above. Show a clear on-screen message
+    // instead of leaving a dead page with buttons that silently do nothing.
+    console.error("NEON STRIKE failed to initialize:", err);
+    const el = document.getElementById("webgl-error");
+    el.querySelector("h1").textContent = "STARTUP FAILED";
+    el.querySelector("p").textContent = "NEON STRIKE hit an error while setting up and couldn't start.";
+    const dim = el.querySelector(".dim");
+    if (dim) dim.textContent = String(err && err.message ? err.message : err) + " — try reloading the page.";
+    el.classList.remove("hidden");
+    document.getElementById("main-menu").classList.add("hidden");
+  }
 })();

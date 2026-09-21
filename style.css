@@ -293,6 +293,49 @@ html, body{
 #center-msg.show{ animation: msgpop 1.4s ease-out; }
 @keyframes msgpop{ 0%{opacity:0; transform:translate(-50%,-50%) scale(0.8);} 15%{opacity:1; transform:translate(-50%,-50%) scale(1);} 80%{opacity:1;} 100%{opacity:0;} }
 
+/* ---- Sniper scope overlay ---- */
+#scope-overlay{
+  position:absolute; inset:0; z-index:22;
+  display:none;
+  background: radial-gradient(circle at center, transparent 0, transparent 33vmin, rgba(0,0,0,0.94) 33.6vmin);
+}
+#scope-overlay.show{ display:block; }
+#scope-overlay::after{
+  /* faint optic tint + edge darkening inside the glass for a bit of depth */
+  content:''; position:absolute; inset:0;
+  background: radial-gradient(circle at center, rgba(140,255,210,0.05) 0, transparent 30vmin);
+}
+.scope-line{ position:absolute; background:rgba(120,255,190,0.85); }
+.scope-h{ top:50%; left:calc(50% - 16vmin); width:32vmin; height:1px; }
+.scope-v{ left:50%; top:calc(50% - 16vmin); height:32vmin; width:1px; }
+.scope-dot{
+  position:absolute; left:50%; top:50%; width:4px; height:4px;
+  margin:-2px 0 0 -2px; border-radius:50%; background:#8cffce; box-shadow:0 0 6px rgba(140,255,210,0.9);
+}
+.scope-tick{ position:absolute; background:rgba(120,255,190,0.7); }
+.tick-l1,.tick-l2{ top:50%; height:1px; width:1.4vmin; }
+.tick-l1{ left:calc(50% - 16vmin); } .tick-l2{ left:calc(50% - 10vmin); }
+.tick-r1,.tick-r2{ top:50%; height:1px; width:1.4vmin; }
+.tick-r1{ left:calc(50% + 14.6vmin); } .tick-r2{ left:calc(50% + 8.6vmin); }
+.tick-t1,.tick-t2{ left:50%; width:1px; height:1.4vmin; }
+.tick-t1{ top:calc(50% - 16vmin); } .tick-t2{ top:calc(50% - 10vmin); }
+.tick-b1,.tick-b2{ left:50%; width:1px; height:1.4vmin; }
+.tick-b1{ top:calc(50% + 14.6vmin); } .tick-b2{ top:calc(50% + 8.6vmin); }
+
+/* ---- Key bindings list ---- */
+.keybind-box{ max-height:220px; overflow-y:auto; }
+.keybind-grid{ display:flex; flex-direction:column; gap:6px; margin-top:8px; }
+.keybind-row{ display:flex; align-items:center; justify-content:space-between; gap:10px; font-size:0.82rem; }
+.keybind-row span{ color:#b9eaf6; }
+.keybind-btn{
+  min-width:76px; text-align:center;
+  background:rgba(0,240,255,0.06); border:1px solid var(--line); color:#dff6ff;
+  padding:5px 10px; font-family:'Orbitron',sans-serif; font-size:0.72rem; letter-spacing:1px;
+  cursor:pointer; border-radius:3px;
+}
+.keybind-btn:hover{ border-color:var(--cyan); }
+.keybind-btn.listening{ border-color:var(--orange); color:var(--orange); animation:pulse 0.6s infinite alternate; }
+
 .end-stats{ font-size:1rem; line-height:2; text-align:center; color:#b9eaf6; }
 .end-stats b{ color:var(--cyan); }
 
@@ -306,116 +349,133 @@ html, body{
 
 /* ============================================================
    MOBILE / TOUCH CONTROLS
-   Hidden entirely on non-touch devices; shown via body.is-touch.
    ============================================================ */
-.touch-hint{ display:none; margin-top:6px; }
-body.is-touch .controls-box .controls-grid{ display:none; }
-body.is-touch .controls-title{ display:none; }
-body.is-touch .touch-hint{ display:block; }
+#mobile-controls{ position:fixed; inset:0; z-index:40; }
+#mobile-controls.hidden{ display:none !important; }
 
-#mobile-controls{
-  display:none;
+#touch-look-zone{
   position:absolute; inset:0;
-  pointer-events:none;
   touch-action:none;
 }
-body.is-touch #mobile-controls{ display:block; }
 
-#look-zone{
-  position:absolute; inset:0;
-  pointer-events:auto; touch-action:none;
-  z-index:1;
+.touch-btn{
+  position:absolute;
+  background:rgba(8,14,20,0.55);
+  border:2px solid rgba(0,240,255,0.4);
+  color:#dff6ff;
+  font-family:'Orbitron',sans-serif;
+  font-weight:700;
+  letter-spacing:1px;
+  border-radius:50%;
+  display:flex; align-items:center; justify-content:center;
+  touch-action:none;
+  user-select:none;
+  -webkit-tap-highlight-color: transparent;
+  transition: background .1s ease, border-color .1s ease, transform .1s ease;
+}
+.touch-btn:active, .touch-btn.pressed{
+  background:rgba(0,240,255,0.28);
+  border-color:var(--cyan);
+  transform:scale(0.94);
 }
 
-#joystick-zone{
-  position:absolute; left:0; bottom:0;
-  width:46vmin; height:46vmin; max-width:230px; max-height:230px;
-  pointer-events:auto; touch-action:none;
-  z-index:3;
-}
-#joystick-base{
-  position:absolute; width:96px; height:96px; border-radius:50%;
-  background:rgba(0,240,255,0.06); border:2px solid rgba(0,240,255,0.35);
-  opacity:0; transition:opacity .15s ease; pointer-events:none;
+/* Movement joystick — bottom-left, thumb zone */
+#touch-joystick{
+  position:absolute; left:26px; bottom:26px;
+  width:118px; height:118px;
+  background:rgba(8,14,20,0.45);
+  border:2px solid rgba(0,240,255,0.3);
+  border-radius:50%;
+  touch-action:none;
 }
 #joystick-knob{
-  position:absolute; left:50%; top:50%; width:46px; height:46px; margin:-23px;
+  position:absolute; left:50%; top:50%;
+  width:52px; height:52px;
+  margin-left:-26px; margin-top:-26px;
+  background:rgba(0,240,255,0.35);
+  border:2px solid var(--cyan);
   border-radius:50%;
-  background:rgba(0,240,255,0.35); border:2px solid rgba(0,240,255,0.85);
-  box-shadow:0 0 14px rgba(0,240,255,0.55);
+  box-shadow:0 0 14px rgba(0,240,255,0.5);
   pointer-events:none;
 }
 
-.mobile-btn{
-  pointer-events:auto; touch-action:none;
-  -webkit-tap-highlight-color:transparent;
-  font-family:'Orbitron', sans-serif; font-weight:700; letter-spacing:1px;
-  color:#dff6ff;
-  background:rgba(10,16,24,0.6);
-  border:1px solid rgba(0,240,255,0.35);
-  border-radius:10px;
-  user-select:none;
-  display:flex; align-items:center; justify-content:center;
-  text-align:center;
-}
-.mobile-btn.touch-active{ background:rgba(0,240,255,0.3); border-color:var(--cyan); }
-.mobile-btn.toggled-on{ background:rgba(0,240,255,0.22); border-color:var(--cyan); color:var(--cyan); box-shadow:0 0 10px rgba(0,240,255,0.4); }
+/* Lean peek buttons, just above the joystick */
+#touch-lean{ position:absolute; left:26px; bottom:158px; width:118px; display:flex; justify-content:space-between; }
+.touch-btn.small{ position:static; width:44px; height:44px; font-size:1rem; border-radius:10px; }
 
-#mobile-action-buttons{
-  position:absolute; right:16px; bottom:130px;
-  display:flex; flex-direction:column; gap:8px; align-items:flex-end;
-  pointer-events:none; z-index:3;
+/* Right-hand action cluster */
+#touch-actions{ position:absolute; right:0; bottom:0; width:230px; height:270px; }
+.touch-btn.round{ width:58px; height:58px; font-size:0.85rem; }
+.touch-btn.fire-btn{
+  width:84px; height:84px; right:20px; bottom:20px;
+  background:rgba(255,45,85,0.22); border-color:var(--red); color:#ffe2e6;
+  font-size:0.9rem;
+  box-shadow:0 0 18px rgba(255,45,85,0.35);
 }
-#mobile-action-buttons .action-btn{
-  font-size:0.62rem; padding:9px 14px; border-radius:8px; min-width:84px;
+.touch-btn.fire-btn:active{ background:rgba(255,45,85,0.45); box-shadow:0 0 30px rgba(255,45,85,0.6); }
+
+/* ADS lives on its own in the top-left corner, away from the fire/reload/jump
+   cluster, so reaching for it never risks a stray tap on another action. */
+.touch-btn.ads-btn{
+  position:fixed; left:14px; top:14px; right:auto; bottom:auto;
+  width:58px; height:58px; font-size:0.68rem;
 }
 
-.fire-btn{
-  position:absolute; right:18px; bottom:18px;
-  width:86px; height:86px; border-radius:50%;
-  font-size:0.8rem;
-  background:rgba(255,45,85,0.16); border-color:rgba(255,45,85,0.55);
-  z-index:3;
-}
-.fire-btn.touch-active{ background:rgba(255,45,85,0.45); }
+/* Dedicated weapon-cycle button (takes the slot ADS used to sit in) */
+.touch-btn.weapon-switch-btn{ right:112px; bottom:36px; font-size:1.1rem; }
 
-.jump-btn{
-  position:absolute; right:118px; bottom:30px;
-  width:60px; height:60px; border-radius:50%;
-  font-size:0.6rem;
-  z-index:3;
+#touch-jump{ right:44px; bottom:118px; }
+#touch-reload{ right:126px; bottom:130px; font-size:1rem; }
+.touch-btn.pill{
+  position:absolute; border-radius:20px; width:84px; height:36px; font-size:0.68rem;
 }
+#touch-sprint{ right:24px; bottom:216px; }
+#touch-crouch{ right:24px; bottom:176px; }
 
-#mobile-weapon-slots{
-  position:absolute; top:70px; left:50%; transform:translateX(-50%);
-  display:flex; gap:8px;
-  pointer-events:none; z-index:3;
-}
-.mobile-weapon-btn{
-  pointer-events:auto; touch-action:none;
-  -webkit-tap-highlight-color:transparent;
-  width:40px; height:40px; border-radius:9px;
-  font-family:'Orbitron', sans-serif; font-size:0.9rem; font-weight:700;
-  color:#dff6ff;
-  background:rgba(10,16,24,0.6);
-  border:1px solid rgba(0,240,255,0.35);
-}
-.mobile-weapon-btn.active{ border-color:var(--cyan); color:var(--cyan); box-shadow:0 0 8px rgba(0,240,255,0.5); }
-
-.pause-btn{
-  position:absolute; top:16px; right:16px;
-  width:42px; height:42px; border-radius:50%;
-  font-size:1rem;
-  z-index:4;
+#touch-pause{
+  right:16px; top:16px; width:40px; height:40px; font-size:1rem;
+  border-color:rgba(255,255,255,0.3);
 }
 
-/* Keep the top-bar / enemy-status panel clear of the weapon-slot row on touch */
-body.is-touch #top-bar{ top:8px; }
-body.is-touch #enemy-status{ top:118px; }
+/* On touch devices, move HUD elements that would otherwise sit under the
+   joystick / action cluster (or the new top-left ADS button) so nothing
+   important is covered by a thumb. */
+body.touch-device #vitals{ left:14px; bottom:auto; top:82px; width:150px; }
+body.touch-device #weapon-hud{ right:14px; bottom:auto; top:66px; text-align:right; }
+body.touch-device #enemy-status{ display:none; } /* keep the combat view uncluttered on small screens */
+body.touch-device #kill-feed{ top:130px; }
+body.touch-device .slot{ pointer-events:auto; }
 
-@media (max-width: 480px){
-  .fire-btn{ width:76px; height:76px; right:14px; bottom:14px; }
-  .jump-btn{ width:52px; height:52px; right:100px; bottom:26px; }
-  #mobile-action-buttons{ right:14px; bottom:112px; }
-  #mobile-action-buttons .action-btn{ min-width:72px; font-size:0.56rem; padding:7px 10px; }
+/* ============================================================
+   MOBILE HUD CUSTOMIZATION (drag-to-reposition edit mode)
+   ============================================================ */
+.mobile-only-row{ display:none; }
+body.touch-device .mobile-only-row{ display:block; }
+
+#hud-edit-toolbar{
+  position:fixed; left:0; right:0; top:0; z-index:60;
+  display:flex; flex-direction:column; align-items:center; gap:8px;
+  padding:14px 10px; background:linear-gradient(180deg, rgba(2,4,7,0.92), rgba(2,4,7,0));
+  pointer-events:none;
 }
+#hud-edit-toolbar.hidden{ display:none !important; }
+#hud-edit-toolbar .edit-hint{
+  font-family:'Orbitron',sans-serif; font-size:0.72rem; letter-spacing:2px;
+  color:var(--cyan); text-shadow:0 0 8px rgba(0,240,255,0.5);
+}
+#hud-edit-toolbar .edit-toolbar-btns{ display:flex; gap:10px; pointer-events:auto; }
+#hud-edit-toolbar .btn{ padding:8px 18px; font-size:0.75rem; }
+
+/* While editing, every repositionable button gets a dashed "grabbable" outline
+   so it's obvious what can be dragged, and sits above the edit toolbar. */
+body.hud-edit-mode .touch-btn,
+body.hud-edit-mode #touch-joystick{
+  outline:2px dashed rgba(255,255,255,0.55);
+  outline-offset:3px;
+}
+body.hud-edit-mode #touch-look-zone{ pointer-events:none; }
+.touch-btn.dragging, #touch-joystick.dragging{
+  z-index:70; opacity:0.85; transform:scale(1.06);
+  outline-color:var(--cyan);
+}
+
