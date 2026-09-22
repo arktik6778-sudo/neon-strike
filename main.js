@@ -74,6 +74,18 @@
     /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
   if (isMobile) document.body.classList.add("touch-device");
 
+  // True only while the player is in the "customize mobile HUD" drag-to-reposition
+  // screen. Declared up here (not inside the mobile-controls block below) so
+  // startGame()/the pause "Resume" handler can force it off as a safety net —
+  // that way a stuck edit mode can never permanently disable look/fire/etc.
+  let editMode = false;
+  function forceExitHudEditMode() {
+    editMode = false;
+    document.body.classList.remove("hud-edit-mode");
+    const toolbar = document.getElementById("hud-edit-toolbar");
+    if (toolbar) toolbar.classList.add("hidden");
+  }
+
   const Settings = {
     sensitivity: 8,    // 1-20
     volume: 0.6,       // 0-1
@@ -127,6 +139,7 @@
     paused: false,
     mode: "ffa",        // ffa | tdm | practice
     map: "gridlock",    // gridlock | foundry
+    difficulty: "normal", // easy | normal | hard
     matchTime: 150,      // seconds
     timeLeft: 150,
     kills: 0,
@@ -134,6 +147,16 @@
     scoreLimit: 20,
     ended: false,
   };
+
+  // Bot difficulty presets — tune accuracy, fire cadence, damage and move
+  // speed together so each tier feels distinctly easier/harder, not just
+  // "same bot, different hit chance".
+  const DIFFICULTY = {
+    easy:   { hitChance: 0.30, fireMin: 1300, fireMax: 2200, dmgMult: 0.70, speedMult: 0.82 },
+    normal: { hitChance: 0.55, fireMin: 900,  fireMax: 1400, dmgMult: 1.00, speedMult: 1.00 },
+    hard:   { hitChance: 0.78, fireMin: 550,  fireMax: 950,  dmgMult: 1.30, speedMult: 1.18 },
+  };
+  function currentDifficulty() { return DIFFICULTY[Game.difficulty] || DIFFICULTY.normal; }
 
   const clock = new THREE.Clock();
 
@@ -592,35 +615,157 @@
     skinMat.emissive.set(hexColor);
   }
 
+  // Per-weapon color palettes, tuned to match each gun's reference art:
+  // rifle = tan/desert polymer w/ holo sight, sniper = olive/black bolt-action
+  // w/ scope, smg = dark-green compact bullpup w/ red dot.
+  const WEAPON_PALETTE = {
+    rifle:  { body: 0xc9b48f, dark: 0x2b2b28, metal: 0x57534a, lens: 0x39ff6a },
+    sniper: { body: 0x4b5240, dark: 0x1c1f18, metal: 0x34372c, lens: 0xffb347 },
+    smg:    { body: 0x3f5334, dark: 0x181f14, metal: 0x3a3a32, lens: 0xff3b3b },
+  };
+
   function buildViewModel(def) {
     const g = new THREE.Group();
-    const bodyMat = new THREE.MeshStandardMaterial({ color: 0x20242b, metalness: 0.6, roughness: 0.4 });
+    const pal = WEAPON_PALETTE[def.key] || WEAPON_PALETTE.rifle;
+    const bodyMat = new THREE.MeshStandardMaterial({ color: pal.body, metalness: 0.3, roughness: 0.55 });
+    const darkMat = new THREE.MeshStandardMaterial({ color: pal.dark, metalness: 0.5, roughness: 0.4 });
+    const metalMat = new THREE.MeshStandardMaterial({ color: pal.metal, metalness: 0.85, roughness: 0.28 });
+    const lensMat = new THREE.MeshBasicMaterial({ color: pal.lens });
     const accentMat = new THREE.MeshStandardMaterial({ color: def.color, emissive: def.color, emissiveIntensity: 0.8, metalness: 0.3, roughness: 0.3 });
 
-    const bodyLen = def.key === "sniper" ? 1.1 : def.key === "smg" ? 0.55 : 0.8;
-    const body = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.11, bodyLen), bodyMat);
-    body.position.set(0, 0, -bodyLen / 2);
-    g.add(body);
+    if (def.key === "sniper") {
+      // Long bolt-action-styled body with a raised scope, cheek riser and suppressor —
+      // matches the green/black scoped rifle reference.
+      const bodyLen = 1.05;
+      const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.085, 0.10, bodyLen), bodyMat);
+      receiver.position.set(0, 0, -bodyLen / 2);
+      g.add(receiver);
+      const stock = new THREE.Mesh(new THREE.BoxGeometry(0.075, 0.12, 0.32), darkMat);
+      stock.position.set(0, -0.01, 0.16);
+      g.add(stock);
+      const riser = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.045, 0.2), darkMat);
+      riser.position.set(0, 0.075, 0.04);
+      g.add(riser);
+      const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.55, 8), metalMat);
+      barrel.rotation.x = Math.PI / 2;
+      barrel.position.set(0, 0.005, -bodyLen - 0.28);
+      g.add(barrel);
+      const supp = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.026, 0.28, 10), darkMat);
+      supp.rotation.x = Math.PI / 2;
+      supp.position.set(0, 0.005, -bodyLen - 0.62);
+      g.add(supp);
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.03, 0.32), metalMat);
+      rail.position.set(0, 0.062, -0.35);
+      g.add(rail);
+      const scope = new THREE.Mesh(new THREE.CylinderGeometry(0.032, 0.032, 0.36, 10), darkMat);
+      scope.rotation.x = Math.PI / 2;
+      scope.position.set(0, 0.12, -0.35);
+      g.add(scope);
+      const scopeLensF = new THREE.Mesh(new THREE.CircleGeometry(0.033, 10), lensMat);
+      scopeLensF.position.set(0, 0.12, -0.528);
+      g.add(scopeLensF);
+      const bolt = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.03, 0.03), metalMat);
+      bolt.position.set(0.06, 0.03, -0.15);
+      g.add(bolt);
+      const grip = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.16, 0.06), darkMat);
+      grip.position.set(0, -0.11, -0.02);
+      grip.rotation.x = 0.2;
+      g.add(grip);
+      const mag = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.1, 0.05), darkMat);
+      mag.position.set(0, -0.09, -0.28);
+      g.add(mag);
+      const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.016, 0.016, 0.5), accentMat);
+      stripe.position.set(0, 0.045, -0.4);
+      g.add(stripe);
 
-    const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.02, bodyLen * 0.7), accentMat);
-    stripe.position.set(0, 0.045, -bodyLen / 2);
-    g.add(stripe);
+    } else if (def.key === "smg") {
+      // Compact dark-green bullpup: stock block behind the grip, short vented
+      // barrel + muzzle brake, red-dot sight — matches the SMG reference.
+      const bodyLen = 0.42;
+      const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.13, bodyLen), bodyMat);
+      receiver.position.set(0, 0, -bodyLen / 2);
+      g.add(receiver);
+      const stockBlock = new THREE.Mesh(new THREE.BoxGeometry(0.095, 0.14, 0.18), darkMat);
+      stockBlock.position.set(0, 0, 0.09);
+      g.add(stockBlock);
+      const shroud = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.026, 0.16, 8), darkMat);
+      shroud.rotation.x = Math.PI / 2;
+      shroud.position.set(0, 0.01, -bodyLen - 0.06);
+      g.add(shroud);
+      const brake = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.03, 0.05, 8), metalMat);
+      brake.rotation.x = Math.PI / 2;
+      brake.position.set(0, 0.01, -bodyLen - 0.17);
+      g.add(brake);
+      const sightBase = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.02, 0.06), darkMat);
+      sightBase.position.set(0, 0.075, -0.15);
+      g.add(sightBase);
+      const sightRing = new THREE.Mesh(new THREE.TorusGeometry(0.022, 0.006, 6, 10), metalMat);
+      sightRing.position.set(0, 0.10, -0.15);
+      g.add(sightRing);
+      const sightLens = new THREE.Mesh(new THREE.CircleGeometry(0.018, 10), lensMat);
+      sightLens.position.set(0, 0.10, -0.144);
+      g.add(sightLens);
+      const mag = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.2, 0.06), darkMat);
+      mag.position.set(0, -0.15, -0.16);
+      mag.rotation.x = -0.18;
+      g.add(mag);
+      const grip = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.15, 0.065), darkMat);
+      grip.position.set(0, -0.1, 0.02);
+      grip.rotation.x = 0.22;
+      g.add(grip);
+      const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.018, 0.018, 0.22), accentMat);
+      stripe.position.set(0, 0.05, -0.12);
+      g.add(stripe);
 
-    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.35, 8), bodyMat);
-    barrel.rotation.x = Math.PI / 2;
-    barrel.position.set(0, 0.01, -bodyLen - 0.1);
-    g.add(barrel);
+    } else {
+      // Tan tactical carbine: holo sight, angled foregrip, laser optic and a
+      // full suppressor — matches the desert-tan rifle reference.
+      const bodyLen = 0.78;
+      const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.095, 0.115, bodyLen), bodyMat);
+      receiver.position.set(0, 0, -bodyLen / 2);
+      g.add(receiver);
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, 0.32), darkMat);
+      rail.position.set(0, 0.02, -bodyLen - 0.12);
+      g.add(rail);
+      const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, 0.3, 8), metalMat);
+      barrel.rotation.x = Math.PI / 2;
+      barrel.position.set(0, 0.01, -bodyLen - 0.32);
+      g.add(barrel);
+      const supp = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.24, 10), darkMat);
+      supp.rotation.x = Math.PI / 2;
+      supp.position.set(0, 0.01, -bodyLen - 0.58);
+      g.add(supp);
+      const sightBase = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.03, 0.09), darkMat);
+      sightBase.position.set(0, 0.09, -0.32);
+      g.add(sightBase);
+      const sightFrame = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.05, 0.012), metalMat);
+      sightFrame.position.set(0, 0.125, -0.36);
+      g.add(sightFrame);
+      const sightLens = new THREE.Mesh(new THREE.CircleGeometry(0.02, 10), lensMat);
+      sightLens.position.set(0, 0.125, -0.353);
+      g.add(sightLens);
+      const laserTube = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.1, 8), metalMat);
+      laserTube.rotation.x = Math.PI / 2;
+      laserTube.position.set(0.045, 0.02, -bodyLen - 0.05);
+      g.add(laserTube);
+      const foregrip = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.13, 0.05), darkMat);
+      foregrip.position.set(0, -0.09, -bodyLen - 0.02);
+      foregrip.rotation.x = -0.35;
+      g.add(foregrip);
+      const grip = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.18, 0.07), darkMat);
+      grip.position.set(0, -0.12, -0.05);
+      grip.rotation.x = 0.25;
+      g.add(grip);
+      const mag = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.19, 0.06), darkMat);
+      mag.position.set(0, -0.14, -bodyLen * 0.35);
+      mag.rotation.x = -0.1;
+      g.add(mag);
+      const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.02, bodyLen * 0.6), accentMat);
+      stripe.position.set(0, 0.05, -bodyLen / 2);
+      g.add(stripe);
+    }
 
-    const grip = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.18, 0.07), bodyMat);
-    grip.position.set(0, -0.12, -0.05);
-    grip.rotation.x = 0.25;
-    g.add(grip);
-
-    const mag = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.18, 0.06), accentMat);
-    mag.position.set(0, -0.13, -bodyLen * 0.35);
-    g.add(mag);
-
-    // Player-customizable skin trim: a small glowing band on the grip/stock, always
+    // Player-customizable skin trim: a small glowing band near the grip, always
     // visible regardless of weapon, so the chosen skin color reads clearly in first person.
     const skinTrim = new THREE.Mesh(new THREE.BoxGeometry(0.075, 0.025, 0.03), skinMat);
     skinTrim.position.set(0, -0.045, -0.02);
@@ -1206,80 +1351,162 @@
   const BOT_NAMES = ["VIPER", "GHOST", "RAZOR", "NOVA", "SLATE", "ECHO", "TALON", "HAVOC"];
 
   function createBot(idx, team) {
+    /*
+      BLOCKY CHARACTER — original NEON STRIKE "Neon Rabbit" design.
+      Built entirely from BoxGeometry so it stays lightweight and has the
+      chunky Krunker-style silhouette: square head, box torso, block limbs,
+      boots, hair blocks, bunny ears and a small tactical weapon.
+    */
     const group = new THREE.Group();
     const teamColor = team === "red" ? 0xff2d55 : 0x2d8cff;
-    const bodyMat = new THREE.MeshStandardMaterial({ color: 0x2a2f38, emissive: teamColor, emissiveIntensity: 0.25, roughness: 0.6 });
-    const headMat = new THREE.MeshStandardMaterial({ color: 0x3a3f48, emissive: teamColor, emissiveIntensity: 0.4 });
 
-    const body = new THREE.Mesh(
-      (typeof THREE.CapsuleGeometry === "function")
-        ? new THREE.CapsuleGeometry(0.35, 0.9, 4, 8)
-        : new THREE.CylinderGeometry(0.35, 0.35, 1.4, 8),
-      bodyMat
-    );
-    body.position.y = 1.0;
-    body.castShadow = true;
-    group.add(body);
+    const mat = (color, emissive = 0x000000, intensity = 0) =>
+      new THREE.MeshStandardMaterial({
+        color, emissive, emissiveIntensity: intensity,
+        roughness: 0.68, metalness: 0.08
+      });
 
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.26, 10, 10), headMat);
-    head.position.y = 1.75;
-    head.castShadow = true;
-    group.add(head);
+    const skinMat = mat(0xf0c7b7);
+    const hairMat = mat(0x161923, 0x05060a, 0.15);
+    const dressMat = mat(0x253b69, teamColor, 0.10);
+    const apronMat = mat(0xe8e7df);
+    const darkMat = mat(0x171b24);
+    const redMat = mat(0x8f1e32, teamColor, 0.08);
+    const bootMat = mat(0x0b0d12);
+    const eyeMat = new THREE.MeshBasicMaterial({ color: 0x8cffce });
+    const visorMat = new THREE.MeshBasicMaterial({ color: teamColor });
 
-    const visor = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.08, 0.05), new THREE.MeshBasicMaterial({ color: teamColor }));
-    visor.position.set(0, 1.78, 0.24);
-    group.add(visor);
+    const meshes = [];
+
+    function box(name, size, pos, material, rot = [0, 0, 0]) {
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(size[0], size[1], size[2]), material);
+      mesh.name = name;
+      mesh.position.set(pos[0], pos[1], pos[2]);
+      mesh.rotation.set(rot[0], rot[1], rot[2]);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      group.add(mesh);
+      meshes.push(mesh);
+      return mesh;
+    }
+
+    // Legs — chunky segmented silhouette.
+    const legL = box("legL", [0.20, 0.62, 0.22], [-0.19, 0.58, 0], darkMat);
+    const legR = box("legR", [0.20, 0.62, 0.22], [ 0.19, 0.58, 0], darkMat);
+
+    // Checker-ish lower leg panels for the gothic outfit.
+    box("sockL", [0.205, 0.25, 0.23], [-0.19, 0.31, 0], apronMat);
+    box("sockR", [0.205, 0.25, 0.23], [ 0.19, 0.31, 0], apronMat);
+
+    // Boots with a slightly oversized blocky toe.
+    box("bootL", [0.25, 0.18, 0.38], [-0.19, 0.12, 0.055], bootMat);
+    box("bootR", [0.25, 0.18, 0.38], [ 0.19, 0.12, 0.055], bootMat);
+
+    // Main torso and skirt/apron.
+    const body = box("body", [0.72, 0.72, 0.40], [0, 1.20, 0], dressMat);
+    box("waist", [0.62, 0.16, 0.36], [0, 0.86, 0], darkMat);
+    box("skirt", [0.86, 0.30, 0.48], [0, 0.72, 0], dressMat);
+    box("apron", [0.48, 0.44, 0.035], [0, 0.80, 0.245], apronMat);
+
+    // Red ribbon/chest accent.
+    box("chestRibbon", [0.18, 0.32, 0.035], [0, 1.34, 0.222], redMat);
+    box("belt", [0.78, 0.08, 0.42], [0, 1.00, 0], darkMat);
+
+    // Block arms + gloves.
+    const armL = box("armL", [0.18, 0.58, 0.20], [-0.48, 1.22, 0], dressMat, [0, 0, -0.08]);
+    const armR = box("armR", [0.18, 0.58, 0.20], [ 0.48, 1.22, 0], dressMat, [0, 0,  0.08]);
+    box("gloveL", [0.20, 0.18, 0.21], [-0.50, 0.88, 0], skinMat);
+    box("gloveR", [0.20, 0.18, 0.21], [ 0.50, 0.88, 0], skinMat);
+
+    // Square head — deliberately not a sphere.
+    const head = box("head", [0.50, 0.50, 0.46], [0, 1.83, 0], skinMat);
+
+    // Hair cap + side locks.
+    box("hairCap", [0.54, 0.22, 0.49], [0, 2.06, -0.015], hairMat);
+    box("hairL", [0.12, 0.48, 0.48], [-0.29, 1.86, -0.005], hairMat);
+    box("hairR", [0.12, 0.48, 0.48], [ 0.29, 1.86, -0.005], hairMat);
+
+    // Simple glowing eyes/visor on the front (+Z).
+    box("eyeL", [0.10, 0.055, 0.025], [-0.12, 1.86, 0.242], eyeMat);
+    box("eyeR", [0.10, 0.055, 0.025], [ 0.12, 1.86, 0.242], eyeMat);
+
+    // Bunny ears — blocky, original silhouette.
+    box("earL", [0.16, 0.52, 0.14], [-0.17, 2.39, 0], hairMat, [0, 0, -0.12]);
+    box("earR", [0.16, 0.52, 0.14], [ 0.17, 2.39, 0], hairMat, [0, 0,  0.12]);
+    box("earInnerL", [0.07, 0.30, 0.025], [-0.17, 2.40, 0.075], redMat, [0, 0, -0.12]);
+    box("earInnerR", [0.07, 0.30, 0.025], [ 0.17, 2.40, 0.075], redMat, [0, 0,  0.12]);
+
+    // Tiny tactical sidearm held forward in the right hand.
+    box("gunGrip", [0.10, 0.25, 0.10], [0.56, 0.86, 0.13], darkMat, [0.25, 0, 0]);
+    box("gunBody", [0.12, 0.12, 0.38], [0.56, 0.96, 0.22], darkMat);
+    box("gunBarrel", [0.07, 0.07, 0.28], [0.56, 0.98, 0.50], visorMat);
+
+    // Team marker on the back/shoulder.
+    box("teamBadge", [0.22, 0.18, 0.025], [0, 1.40, -0.215], visorMat);
 
     scene.add(group);
 
     const sp = randomSpawn(team);
     group.position.copy(sp);
 
-    // ---- Floating health bar (billboard, always faces the camera) ----
+    // Floating health bar.
     const barGroup = new THREE.Group();
-    barGroup.position.set(0, 2.15, 0);
-    const BAR_W = 0.8, BAR_H = 0.09;
+    barGroup.position.set(0, 2.75, 0);
+    const BAR_W = 0.9, BAR_H = 0.09;
+
     const bg = new THREE.Mesh(
       new THREE.PlaneGeometry(BAR_W + 0.03, BAR_H + 0.03),
       new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.55, depthTest: false })
     );
     bg.renderOrder = 998;
+
     const fill = new THREE.Mesh(
       new THREE.PlaneGeometry(BAR_W, BAR_H),
-      new THREE.MeshBasicMaterial({ color: team === "red" ? 0xff2d55 : 0x2d8cff, transparent: true, depthTest: false })
+      new THREE.MeshBasicMaterial({
+        color: team === "red" ? 0xff2d55 : 0x2d8cff,
+        transparent: true, depthTest: false
+      })
     );
     fill.renderOrder = 999;
     barGroup.add(bg, fill);
     group.add(barGroup);
 
-    // Name tag sprite (rendered once to a canvas texture — cheap, static per bot)
+    // Name tag.
     const nameCanvas = document.createElement("canvas");
     nameCanvas.width = 256; nameCanvas.height = 48;
     const nctx = nameCanvas.getContext("2d");
-    nctx.fillStyle = "rgba(0,0,0,0)"; nctx.fillRect(0, 0, 256, 48);
+    nctx.clearRect(0, 0, 256, 48);
     nctx.font = "bold 28px Orbitron, sans-serif";
     nctx.fillStyle = team === "red" ? "#ff9aad" : "#9ac9ff";
     nctx.textAlign = "center";
     const botName = BOT_NAMES[idx % BOT_NAMES.length] + "-" + (idx + 1);
     nctx.fillText(botName, 128, 34);
+
     const nameTex = new THREE.CanvasTexture(nameCanvas);
-    const nameSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: nameTex, transparent: true, depthTest: false }));
+    const nameSprite = new THREE.Sprite(
+      new THREE.SpriteMaterial({ map: nameTex, transparent: true, depthTest: false })
+    );
     nameSprite.scale.set(1.1, 0.2, 1);
-    nameSprite.position.set(0, 2.35, 0);
+    nameSprite.position.set(0, 2.96, 0);
     nameSprite.renderOrder = 999;
     group.add(nameSprite);
 
     return {
       id: idx, name: botName,
-      group, bodyMesh: body, headMesh: head,
+      group,
+      bodyMesh: body,
+      headMesh: head,
+      legL, legR, armL, armR,
+      allMeshes: meshes,
       team,
       health: 100, maxHealth: 100, alive: true,
       state: "patrol",
       target: randomPatrolPoint(team),
       lastShot: 0, weapon: WEAPONS.rifle,
       respawnAt: 0,
-      speed: 2.6,
+      speed: 2.6 * currentDifficulty().speedMult,
       radius: 0.42,
+      animPhase: Math.random() * Math.PI * 2,
       barFill: fill, barGroup, nameSprite, BAR_W,
       lastPos: group.position.clone(),
       stuckTimer: 0,
@@ -1322,10 +1549,13 @@
       t += 0.05;
       bot.group.position.y = startY - t * 1.2;
       bot.group.rotation.z = t * 1.2;
-      bot.bodyMesh.material.opacity = Math.max(0, 1 - t);
-      bot.bodyMesh.material.transparent = true;
-      bot.headMesh.material.opacity = Math.max(0, 1 - t);
-      bot.headMesh.material.transparent = true;
+      const fadeMeshes = bot.allMeshes || [bot.bodyMesh, bot.headMesh];
+      fadeMeshes.forEach((mesh) => {
+        if (mesh && mesh.material && "opacity" in mesh.material) {
+          mesh.material.opacity = Math.max(0, 1 - t);
+          mesh.material.transparent = true;
+        }
+      });
       if (t >= 1) { clearInterval(anim); bot.group.visible = false; }
     }, 50);
     bot.respawnAt = performance.now() + 3500;
@@ -1338,7 +1568,12 @@
     bot.group.position.copy(sp);
     bot.group.position.y = 0;
     bot.group.rotation.z = 0;
-    bot.bodyMesh.material.opacity = 1; bot.headMesh.material.opacity = 1;
+    (bot.allMeshes || [bot.bodyMesh, bot.headMesh]).forEach((mesh) => {
+      if (mesh && mesh.material && "opacity" in mesh.material) {
+        mesh.material.opacity = 1;
+        mesh.material.transparent = false;
+      }
+    });
     bot.group.visible = true;
     bot.health = bot.maxHealth;
     bot.alive = true;
@@ -1391,6 +1626,7 @@
       bot.target = randomPatrolPoint(bot.team);
     }
 
+    let isMoving = false;
     if (bot.state === "chase") {
       const toPlayer = playerPos.clone().sub(bot.group.position); toPlayer.y = 0;
       const dist = toPlayer.length();
@@ -1406,17 +1642,18 @@
       if (dist > 16) moveVec.add(dir);              // too far: close in
       else if (dist < 6) moveVec.sub(dir);           // too close: back off
       moveVec.addScaledVector(perp, bot.strafeDir * 0.7); // always strafe a bit
-      if (moveVec.lengthSq() > 0) moveVec.normalize();
+      if (moveVec.lengthSq() > 0) { moveVec.normalize(); isMoving = true; }
 
       bot.group.position.addScaledVector(moveVec, bot.speed * dt);
       bot.group.lookAt(playerPos.x, bot.group.position.y, playerPos.z);
 
-      // shoot at player
-      if (Game.mode !== "practice" && now - bot.lastShot > 900 + Math.random() * 500) {
+      // shoot at player — cadence scales with the selected bot difficulty
+      const diff = currentDifficulty();
+      if (Game.mode !== "practice" && now - bot.lastShot > diff.fireMin + Math.random() * (diff.fireMax - diff.fireMin)) {
         bot.lastShot = now;
         fireBotAtPlayer(bot, eyePos, playerPos);
       } else if (Game.mode === "practice" && now - bot.lastShot > 2200) {
-        bot.lastShot = now; // practice bots shoot rarely & weakly
+        bot.lastShot = now; // practice bots shoot rarely & weakly, regardless of difficulty
         fireBotAtPlayer(bot, eyePos, playerPos, 0.3);
       }
     } else {
@@ -1430,6 +1667,7 @@
         dir.normalize();
         bot.group.position.addScaledVector(dir, bot.speed * 0.55 * dt);
         bot.group.lookAt(bot.target.x, bot.group.position.y, bot.target.z);
+        isMoving = true;
       }
       const movedDist = bot.group.position.distanceTo(bot.lastPos);
       if (movedDist < 0.03) {
@@ -1442,7 +1680,34 @@
 
     bot.lastPos.copy(bot.group.position);
     resolveCollision(bot.group.position);
+    animateBotLimbs(bot, dt, isMoving);
     updateBotHealthBar(bot);
+  }
+
+  // Simple walk-cycle animation: swings the arm/leg pairs opposite each other
+  // (like a marching gait) while a bot is actually moving, and eases the limbs
+  // back to a relaxed idle pose the moment it stops — so patrolling and
+  // chasing bots read as alive rather than sliding around like static props.
+  function animateBotLimbs(bot, dt, moving) {
+    if (!bot.legL || !bot.legR || !bot.armL || !bot.armR) return;
+    const cycleSpeed = bot.state === "chase" ? 9 : 6.5;
+    if (moving) {
+      bot.animPhase += dt * cycleSpeed;
+      const swing = Math.sin(bot.animPhase) * 0.55;
+      bot.legL.rotation.x = swing;
+      bot.legR.rotation.x = -swing;
+      bot.armL.rotation.x = -swing * 0.75 - 0.08;
+      bot.armR.rotation.x = swing * 0.75 - 0.08;
+      // tiny torso bounce synced to the stride for a less robotic gait
+      bot.bodyMesh.position.y = 1.20 + Math.abs(Math.sin(bot.animPhase)) * 0.025;
+    } else {
+      // ease back to the neutral idle pose rather than snapping to it
+      bot.legL.rotation.x *= 0.85;
+      bot.legR.rotation.x *= 0.85;
+      bot.armL.rotation.x *= 0.85;
+      bot.armR.rotation.x *= 0.85;
+      bot.bodyMesh.position.y += (1.20 - bot.bodyMesh.position.y) * 0.2;
+    }
   }
 
   // Keep living bots from overlapping each other or standing inside the player —
@@ -1481,9 +1746,9 @@
 
   function fireBotAtPlayer(bot, eyePos, playerPos, dmgMult = 1) {
     Effects.spawnImpactSpark(eyePos.clone().addScaledVector(playerPos.clone().sub(eyePos).normalize(), 0.6), 0xff5a00);
-    const hitChance = 0.55; // bots aren't perfectly accurate
-    if (Math.random() < hitChance) {
-      damagePlayer((10 + Math.random() * 8) * dmgMult);
+    const diff = currentDifficulty();
+    if (Math.random() < diff.hitChance) {
+      damagePlayer((10 + Math.random() * 8) * dmgMult * diff.dmgMult);
     }
   }
 
@@ -1561,6 +1826,7 @@
     document.getElementById("settings-menu").classList.remove("hidden");
   }
   function closeSettings() {
+    if (isMobile) forceExitHudEditMode();
     document.getElementById("settings-menu").classList.add("hidden");
     document.getElementById(settingsReturnTo).classList.remove("hidden");
   }
@@ -1620,6 +1886,13 @@
       Game.map = btn.dataset.map;
     });
   });
+  document.querySelectorAll(".mode-btn[data-difficulty]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".mode-btn[data-difficulty]").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      Game.difficulty = btn.dataset.difficulty;
+    });
+  });
 
   // ---- Key bindings UI: renders one row per action; clicking a row's button
   // arms `listeningForBind`, and the next keydown anywhere (captured at the
@@ -1671,7 +1944,7 @@
 
   // ---- Pause ----
   document.getElementById("btn-resume").addEventListener("click", () => {
-    if (isMobile) { Game.paused = false; document.getElementById("pause-menu").classList.add("hidden"); }
+    if (isMobile) { forceExitHudEditMode(); Game.paused = false; document.getElementById("pause-menu").classList.add("hidden"); }
     else canvas.requestPointerLock();
   });
   document.getElementById("btn-quit").addEventListener("click", quitToMenu);
@@ -1679,6 +1952,7 @@
   document.getElementById("btn-end-menu").addEventListener("click", quitToMenu);
 
   function quitToMenu() {
+    if (isMobile) forceExitHudEditMode();
     Game.running = false;
     Game.paused = false;
     document.exitPointerLock();
@@ -1690,6 +1964,7 @@
   }
 
   function startGame() {
+    if (isMobile) forceExitHudEditMode();
     AudioEngine.unlock();
     document.getElementById("main-menu").classList.add("hidden");
     document.getElementById("end-screen").classList.add("hidden");
@@ -1757,10 +2032,8 @@
   const TouchInput = { move: { x: 0, y: 0 } };
 
   if (isMobile) {
-    // Set true while the player is dragging touch buttons around in the HUD
-    // customization screen. Every gameplay touch handler below checks this
-    // first and bails out, so nothing fires while buttons are being moved.
-    let editMode = false;
+    // (editMode itself is declared up in section 2, near isMobile, so both
+    // this setup block and startGame()/Resume can see and reset it.)
 
     // ---- Movement joystick (identifier-tracked so it doesn't fight the look drag) ----
     const joystickBase = document.getElementById("touch-joystick");
@@ -1805,13 +2078,13 @@
     const lookZone = document.getElementById("touch-look-zone");
     let lookTouchId = null, lastLookX = 0, lastLookY = 0;
     lookZone.addEventListener("touchstart", (e) => {
-      if (lookTouchId !== null || !Game.running || Game.paused) return;
+      if (editMode || lookTouchId !== null || !Game.running || Game.paused) return;
       const t = e.changedTouches[0];
       lookTouchId = t.identifier;
       lastLookX = t.clientX; lastLookY = t.clientY;
     }, { passive: true });
     lookZone.addEventListener("touchmove", (e) => {
-      if (lookTouchId === null) return;
+      if (editMode || lookTouchId === null) return;
       const t = [...e.changedTouches].find((t) => t.identifier === lookTouchId);
       if (!t) return;
       const dx = t.clientX - lastLookX, dy = t.clientY - lastLookY;
@@ -1998,10 +2271,8 @@
       document.body.classList.add("hud-edit-mode");
     }
     function exitHudEditMode(save) {
-      editMode = false;
       if (save) saveHudLayout();
-      document.getElementById("hud-edit-toolbar").classList.add("hidden");
-      document.body.classList.remove("hud-edit-mode");
+      forceExitHudEditMode();
       if (!Game.running) document.getElementById("mobile-controls").classList.add("hidden");
       document.getElementById("settings-menu").classList.remove("hidden");
     }
