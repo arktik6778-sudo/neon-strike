@@ -479,3 +479,23 @@ body.hud-edit-mode #touch-look-zone{ pointer-events:none; }
   outline-color:var(--cyan);
 }
 
+
+/* ===== v1.1: SYNC / OVERDRIVE ===== */
+#sync-wrap{position:absolute;left:50%;bottom:20px;transform:translateX(-50%);width:230px;text-align:center;
+  pointer-events:none;font-size:11px;letter-spacing:3px;color:#00f0ff;text-shadow:0 0 6px rgba(0,240,255,.7)}
+#sync-track{height:8px;margin:4px 0;border:1px solid rgba(0,240,255,.6);background:rgba(0,0,0,.5)}
+#sync-bar{height:100%;width:0;background:linear-gradient(90deg,#0077ff,#00f0ff);transition:width .12s}
+#sync-hint{opacity:0;font-size:10px;transition:opacity .2s}
+#sync-wrap.ready #sync-bar{background:linear-gradient(90deg,#ff2d55,#ffe066);animation:syncPulse .45s infinite alternate}
+#sync-wrap.ready #sync-hint,#sync-wrap.active #sync-hint{opacity:1}
+#sync-wrap.active #sync-bar{background:linear-gradient(90deg,#ffe066,#ff2d55);transition:none}
+@keyframes syncPulse{from{filter:brightness(1)}to{filter:brightness(1.7)}}
+body.overdrive #hud::after{content:"";position:fixed;inset:0;pointer-events:none;
+  box-shadow:inset 0 0 140px 30px rgba(0,240,255,.35);animation:odPulse .9s infinite alternate}
+@keyframes odPulse{from{opacity:.55}to{opacity:1}}
+#touch-overdrive{display:none;position:fixed;left:50%;top:64px;transform:translateX(-50%);
+  background:rgba(255,45,85,.35);border-color:#ff2d55}
+#touch-overdrive.ready{display:block}
+
+#weapon-slots{flex-wrap:wrap;max-width:390px;}
+#weapon-slots .slot{min-width:62px;text-align:center;}

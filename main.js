@@ -102,19 +102,19 @@
     forward: "KeyW", back: "KeyS", left: "KeyA", right: "KeyD",
     jump: "Space", crouch: "ControlLeft", sprint: "ShiftLeft",
     reload: "KeyR", leanLeft: "KeyQ", leanRight: "KeyE",
-    weapon1: "Digit1", weapon2: "Digit2", weapon3: "Digit3",
-    pause: "Escape",
+    weapon1: "Digit1", weapon2: "Digit2", weapon3: "Digit3", weapon4: "Digit4", weapon5: "Digit5", weapon6: "Digit6",
+    pause: "Escape", overdrive: "KeyF",
   };
   const BINDING_LABELS = {
     forward: "Move Forward", back: "Move Back", left: "Move Left", right: "Move Right",
     jump: "Jump / Climb", crouch: "Crouch", sprint: "Sprint",
     reload: "Reload", leanLeft: "Lean Left", leanRight: "Lean Right",
-    weapon1: "Weapon Slot 1", weapon2: "Weapon Slot 2", weapon3: "Weapon Slot 3",
-    pause: "Pause",
+    weapon1: "Weapon Slot 1", weapon2: "Weapon Slot 2", weapon3: "Weapon Slot 3", weapon4: "Weapon Slot 4", weapon5: "Weapon Slot 5", weapon6: "Weapon Slot 6",
+    pause: "Pause", overdrive: "Overdrive",
   };
   const KEY_DISPLAY = {
     Space: "SPACE", ControlLeft: "CTRL", ShiftLeft: "SHIFT", Escape: "ESC",
-    Digit1: "1", Digit2: "2", Digit3: "3",
+    Digit1: "1", Digit2: "2", Digit3: "3", Digit4: "4", Digit5: "5", Digit6: "6",
   };
   function keyDisplayName(code) {
     if (!code) return "—";
@@ -140,21 +140,26 @@
     mode: "ffa",        // ffa | tdm | practice
     map: "gridlock",    // gridlock | foundry
     difficulty: "normal", // easy | normal | hard
+    loadout: "rifle",   // rifle | smg | sniper — player's starting weapon
     matchTime: 150,      // seconds
     timeLeft: 150,
     kills: 0,
     deaths: 0,
     scoreLimit: 20,
     ended: false,
+    sync: 0, overdrive: false, overdriveT: 0,
   };
 
   // Bot difficulty presets — tune accuracy, fire cadence, damage and move
   // speed together so each tier feels distinctly easier/harder, not just
   // "same bot, different hit chance".
   const DIFFICULTY = {
-    easy:   { hitChance: 0.30, fireMin: 1300, fireMax: 2200, dmgMult: 0.70, speedMult: 0.82 },
-    normal: { hitChance: 0.55, fireMin: 900,  fireMax: 1400, dmgMult: 1.00, speedMult: 1.00 },
-    hard:   { hitChance: 0.78, fireMin: 550,  fireMax: 950,  dmgMult: 1.30, speedMult: 1.18 },
+    // reactionMs controls how long a bot waits after spotting the player.
+    // aimJitter reduces effective hit chance so each difficulty affects both
+    // responsiveness and accuracy without ever producing NaN.
+    easy:   { hitChance: 0.30, aimJitter: 0.24, reactionMs: 520, fireMin: 1300, fireMax: 2200, dmgMult: 0.70, speedMult: 0.82 },
+    normal: { hitChance: 0.55, aimJitter: 0.14, reactionMs: 300, fireMin: 900,  fireMax: 1400, dmgMult: 1.00, speedMult: 1.00 },
+    hard:   { hitChance: 0.78, aimJitter: 0.06, reactionMs: 140, fireMin: 550,  fireMax: 950,  dmgMult: 1.30, speedMult: 1.18 },
   };
   function currentDifficulty() { return DIFFICULTY[Game.difficulty] || DIFFICULTY.normal; }
 
@@ -220,6 +225,8 @@
       hurt() { noiseBurst({ duration: 0.15, vol: 0.3, filterFreq: 600, decay: 0.14 }); },
       kill() { tone(600, { duration: 0.09, vol: 0.2, type: "triangle", slideTo: 900 }); },
       jump() { tone(400, { duration: 0.08, vol: 0.15, type: "sine", slideTo: 600 }); },
+      land() { noiseBurst({ duration: 0.08, vol: 0.22, filterFreq: 260, decay: 0.08 }); },
+      flinch() { noiseBurst({ duration: 0.05, vol: 0.18, filterFreq: 1400, decay: 0.05 }); },
       empty() { tone(160, { duration: 0.05, vol: 0.15, type: "square" }); },
       unlock() { ensureCtx(); },
     };
@@ -433,6 +440,24 @@
     // Recompute solid boxes slightly shrunk vertically doesn't matter for XZ collision.
   }
 
+  // ---- Procedural vegetation: low-cost, original foliage that adds readable
+  // cover without turning the arena into a dense GPU-heavy forest.
+  function addVegetation(x,z,seed=0,teamTint=null){
+    const group=new THREE.Group(); group.position.set(x,0,z);
+    const green=teamTint || (seed%2 ? 0x244d2c : 0x315f35);
+    const trunk=new THREE.Mesh(new THREE.CylinderGeometry(0.10,0.16,1.2,6),new THREE.MeshStandardMaterial({color:0x2a1d14,roughness:1}));
+    trunk.position.y=.6; group.add(trunk);
+    const h=1.8+(seed%4)*0.35;
+    const crown=new THREE.Mesh(new THREE.ConeGeometry(.75+(seed%3)*.12,h,6),new THREE.MeshStandardMaterial({color:green,roughness:.95}));
+    crown.position.y=1.35+h*.32; crown.castShadow=true; group.add(crown);
+    const low=new THREE.Mesh(new THREE.ConeGeometry(.95,.75,6),new THREE.MeshStandardMaterial({color:green,roughness:1}));
+    low.position.y=.72; low.castShadow=true; group.add(low);
+    scene.add(group); mapMeshes.push(group);
+  }
+  function scatterVegetation(points,count,spread=5,tint=null){
+    for(let i=0;i<count;i++){ const p=points[i%points.length]; addVegetation(p[0]+(Math.random()-.5)*spread,p[1]+(Math.random()-.5)*spread,i,tint); }
+  }
+
   // ---- Second original layout: FOUNDRY — an industrial cross-shaped complex with
   // tighter corridors, a raised gantry walkway, and open yards on two sides. ----
   function buildMapFoundry() {
@@ -503,20 +528,15 @@
     addAccentLight(36, 8, 36, 0x00e5ff, 1.0, 22);
     addAccentLight(-14, 7, -14, 0xff9500, 0.8, 18);
     addAccentLight(14, 7, 14, 0x00e5ff, 0.8, 18);
+    scatterVegetation([[-44,-20],[-44,20],[44,-20],[44,20],[-22,-44],[22,44]], 16, 6, 0x3d6b37);
   }
 
   // Spawn points split per team so, in Team Deathmatch, the player's squad
   // spawns together on one side of the map and the enemy team spawns on the
   // opposite side (Free-for-all / Practice draw from both sides combined).
   const MAP_SPAWNS = {
-    gridlock: {
-      blue: [[-40, 0], [-40, -40], [-40, 40], [-20, -30], [0, 40]],
-      red: [[40, 0], [40, 40], [40, -40], [20, 30], [0, -40]],
-    },
-    foundry: {
-      blue: [[-36, -36], [-36, 36], [-44, 0], [-26, 20], [0, 44]],
-      red: [[36, -36], [36, 36], [44, 0], [26, -20], [0, -44]],
-    },
+    gridlock: { blue:[[ -40, 0 ]], red:[[ 40, 0 ]] },
+    foundry: { blue:[[ -36, -36 ]], red:[[ 36, 36 ]] },
   };
   // Patrol waypoints, similarly biased to each team's side of the map, with a
   // shared set of central points both teams contest so fights don't only
@@ -575,33 +595,22 @@
       ? mapData[team]
       : [...mapData.blue, ...mapData.red];
     const p = list[Math.floor(Math.random() * list.length)];
-    return new THREE.Vector3(p[0], 0, p[1]);
+    const jitter = Game.mode === "tdm" ? 2.2 : 0;
+    return new THREE.Vector3(p[0] + (Math.random()-0.5)*jitter, 0, p[1] + (Math.random()-0.5)*jitter);
   }
 
   /* ==========================================================================
      6. WEAPON DEFINITIONS
      ========================================================================== */
   const WEAPONS = {
-    rifle: {
-      key: "rifle", label: "ASSAULT RIFLE", damage: 34, headMult: 2.0,
-      fireRateMs: 110, magSize: 30, reserveMax: 90, reloadTimeMs: 1700,
-      spread: 0.018, adsSpread: 0.006, recoilKick: 0.014, automatic: true,
-      color: 0x2d8cff, muzzleColor: 0x9fdcff,
-    },
-    smg: {
-      key: "smg", label: "SUBMACHINE GUN", damage: 15, headMult: 1.8,
-      fireRateMs: 70, magSize: 40, reserveMax: 120, reloadTimeMs: 1400,
-      spread: 0.03, adsSpread: 0.012, recoilKick: 0.009, automatic: true,
-      color: 0x39ff6a, muzzleColor: 0xbfffcf,
-    },
-    sniper: {
-      key: "sniper", label: "RAILGUN SNIPER", damage: 100, headMult: 2.2,
-      fireRateMs: 1100, magSize: 5, reserveMax: 20, reloadTimeMs: 2400,
-      spread: 0.002, adsSpread: 0.0003, recoilKick: 0.05, automatic: false,
-      color: 0xff9500, muzzleColor: 0xffe0b0,
-    },
+    rifle: { key:"rifle", label:"ASSAULT RIFLE", damage:34, headMult:2.0, fireRateMs:110, magSize:30, reserveMax:90, reloadTimeMs:1700, spread:0.018, adsSpread:0.006, recoilKick:0.014, automatic:true, color:0x2d8cff, muzzleColor:0x9fdcff },
+    smg: { key:"smg", label:"VECTOR SMG", damage:15, headMult:1.8, fireRateMs:70, magSize:40, reserveMax:120, reloadTimeMs:1400, spread:0.03, adsSpread:0.012, recoilKick:0.009, automatic:true, color:0x39ff6a, muzzleColor:0xbfffcf },
+    sniper: { key:"sniper", label:"RAILGUN SNIPER", damage:100, headMult:2.2, fireRateMs:1100, magSize:5, reserveMax:20, reloadTimeMs:2400, spread:0.002, adsSpread:0.0003, recoilKick:0.05, automatic:false, color:0xff9500, muzzleColor:0xffe0b0 },
+    burst: { key:"burst", label:"VOLT BURST", damage:25, headMult:1.9, fireRateMs:180, magSize:24, reserveMax:72, reloadTimeMs:1550, spread:0.012, adsSpread:0.004, recoilKick:0.012, automatic:false, burstCount:3, color:0xb060ff, muzzleColor:0xe0c8ff },
+    shotgun: { key:"shotgun", label:"BREACH-12", damage:14, headMult:1.45, fireRateMs:720, magSize:6, reserveMax:30, reloadTimeMs:1900, spread:0.085, adsSpread:0.055, recoilKick:0.045, automatic:false, pellets:7, color:0xff5a00, muzzleColor:0xffc080 },
+    plasma: { key:"plasma", label:"ION PISTOL", damage:48, headMult:1.7, fireRateMs:300, magSize:12, reserveMax:48, reloadTimeMs:1250, spread:0.008, adsSpread:0.003, recoilKick:0.018, automatic:false, color:0x00f0ff, muzzleColor:0x8cffff },
   };
-  const WEAPON_ORDER = ["rifle", "smg", "sniper"];
+  const WEAPON_ORDER = ["rifle","smg","sniper","burst","shotgun","plasma"];
 
   // Build a simple viewmodel mesh per weapon (procedural, original design — no external assets)
   // Shared "skin" material — a colored trim/wristband on every weapon that the
@@ -619,9 +628,12 @@
   // rifle = tan/desert polymer w/ holo sight, sniper = olive/black bolt-action
   // w/ scope, smg = dark-green compact bullpup w/ red dot.
   const WEAPON_PALETTE = {
-    rifle:  { body: 0xc9b48f, dark: 0x2b2b28, metal: 0x57534a, lens: 0x39ff6a },
-    sniper: { body: 0x4b5240, dark: 0x1c1f18, metal: 0x34372c, lens: 0xffb347 },
-    smg:    { body: 0x3f5334, dark: 0x181f14, metal: 0x3a3a32, lens: 0xff3b3b },
+    rifle:{body:0xc9b48f,dark:0x2b2b28,metal:0x57534a,lens:0x39ff6a},
+    sniper:{body:0x4b5240,dark:0x1c1f18,metal:0x34372c,lens:0xffb347},
+    smg:{body:0x3f5334,dark:0x181f14,metal:0x3a3a32,lens:0xff3b3b},
+    burst:{body:0x25203a,dark:0x110c1e,metal:0x6f5a8f,lens:0xd9a7ff},
+    shotgun:{body:0x4a2b18,dark:0x17100a,metal:0x8b5e34,lens:0xffb060},
+    plasma:{body:0x12343a,dark:0x071519,metal:0x2c8791,lens:0x8cffff},
   };
 
   function buildViewModel(def) {
@@ -775,6 +787,24 @@
     g.position.set(0.22, -0.2, -0.42);
     g.rotation.y = 0.02;
     g.userData.baseX = 0.22; g.userData.baseY = -0.2; g.userData.baseZ = -0.42;
+    if (["burst","shotgun","plasma"].includes(def.key)) {
+      // Distinct silhouettes: bullpup burst, drum-fed breach shotgun, compact energy pistol.
+      while (g.children.length) g.remove(g.children[0]);
+      const body = new THREE.Mesh(new THREE.BoxGeometry(0.11,0.13, def.key === "shotgun" ? 0.72 : 0.48), bodyMat);
+      body.position.set(0,0,-0.25); g.add(body);
+      const grip = new THREE.Mesh(new THREE.BoxGeometry(0.10,0.22,0.12), darkMat);
+      grip.position.set(0,-0.10,0.05); grip.rotation.x=0.28; g.add(grip);
+      if(def.key === "burst"){
+        const mag=new THREE.Mesh(new THREE.BoxGeometry(0.07,0.20,0.10),metalMat); mag.position.set(0,-0.12,-0.16); g.add(mag);
+        const sight=new THREE.Mesh(new THREE.BoxGeometry(0.06,0.06,0.18),accentMat); sight.position.set(0,0.10,-0.18); g.add(sight);
+      } else if(def.key === "shotgun"){
+        const drum=new THREE.Mesh(new THREE.CylinderGeometry(0.13,0.13,0.10,12),metalMat); drum.rotation.z=Math.PI/2; drum.position.set(0,-0.10,-0.10); g.add(drum);
+        const pump=new THREE.Mesh(new THREE.BoxGeometry(0.14,0.11,0.22),darkMat); pump.position.set(0,0,-0.48); g.add(pump);
+      } else {
+        const core=new THREE.Mesh(new THREE.BoxGeometry(0.07,0.07,0.24),lensMat); core.position.set(0,0.08,-0.24); g.add(core);
+        const coil=new THREE.Mesh(new THREE.TorusGeometry(0.09,0.018,6,12),accentMat); coil.rotation.x=Math.PI/2; coil.position.set(0,0,-0.44); g.add(coil);
+      }
+    }
     return g;
   }
   const viewModels = {};
@@ -910,6 +940,13 @@
     // Lean / take-cover
     lean: 0, // smoothed -1 (left) .. 1 (right)
     scoped: false,
+    // Animation state: idle breathing, sprint lean, jump/landing squash, hit reaction
+    idlePhase: 0,
+    sprintLean: 0,
+    wasOnGround: true,
+    landSquashT: 0,
+    jumpKickT: 0,
+    hitReactT: 0,
   };
 
   function currentWeaponKey() { return WEAPON_ORDER[Player.currentWeaponIdx]; }
@@ -925,7 +962,9 @@
     Player.crouching = false;
     Player.reloading = false;
     WEAPON_ORDER.forEach((k) => { Player.ammo[k] = WEAPONS[k].magSize; Player.reserve[k] = WEAPONS[k].reserveMax; });
-    Player.currentWeaponIdx = 0;
+    // Spawn holding whichever weapon was chosen as the loadout in the main menu.
+    const loadoutIdx = WEAPON_ORDER.indexOf(Game.loadout);
+    Player.currentWeaponIdx = loadoutIdx >= 0 ? loadoutIdx : 0;
     switchWeaponVisual();
   }
 
@@ -943,9 +982,13 @@
     keys[e.code] = true;
     if (!Game.running || Game.paused) return;
     if (e.code === Bindings.reload) startReload();
+    if (e.code === Bindings.overdrive) activateOverdrive();
     if (e.code === Bindings.weapon1) equipWeapon(0);
     if (e.code === Bindings.weapon2) equipWeapon(1);
     if (e.code === Bindings.weapon3) equipWeapon(2);
+    if (e.code === Bindings.weapon4) equipWeapon(3);
+    if (e.code === Bindings.weapon5) equipWeapon(4);
+    if (e.code === Bindings.weapon6) equipWeapon(5);
     if (e.code === Bindings.jump) { if (!tryMantle()) tryJump(); }
   });
   window.addEventListener("keyup", (e) => { keys[e.code] = false; });
@@ -967,6 +1010,7 @@
     if (Player.onGround && Player.alive && !Player.crouching && !Player.mantling) {
       Player.velY = 5.2;
       Player.onGround = false;
+      Player.jumpKickT = 1; // brief upward weapon-dip kick on takeoff, eased in updatePlayer
       AudioEngine.jump();
     }
   }
@@ -1011,15 +1055,18 @@
     Player.reloadDuration = w.reloadTimeMs;
     document.getElementById("reload-indicator").classList.remove("hidden");
     AudioEngine.reload();
-    setTimeout(() => {
-      const need = w.magSize - Player.ammo[wk];
-      const take = Math.min(need, Player.reserve[wk]);
-      Player.ammo[wk] += take;
-      Player.reserve[wk] -= take;
-      Player.reloading = false;
-      document.getElementById("reload-indicator").classList.add("hidden");
-      updateAmmoHUD();
-    }, w.reloadTimeMs);
+    Player.reloadWk = wk;
+  }
+
+  function finishReload() {
+    const wk = Player.reloadWk || currentWeaponKey();
+    const w = WEAPONS[wk];
+    const take = Math.min(w.magSize - Player.ammo[wk], Player.reserve[wk]);
+    Player.ammo[wk] += take;
+    Player.reserve[wk] -= take;
+    Player.reloading = false;
+    document.getElementById("reload-indicator").classList.add("hidden");
+    updateAmmoHUD();
   }
 
   function updateAmmoHUD() {
@@ -1117,9 +1164,10 @@
       const bot = Bots.list.find((b) => b.headMesh === hit.object || b.bodyMesh === hit.object);
       if (bot) {
         const isHead = hit.object === bot.headMesh;
-        const dmg = w.damage * (isHead ? w.headMult : 1);
-        damageBot(bot, dmg, isHead);
+        const dmg = w.damage * (isHead ? w.headMult : 1) * (Game.overdrive ? 1.5 : 1);
+        damageBot(bot, dmg, isHead, dir);
         showHitmarker(isHead);
+        addSync(isHead ? 7 : 3);
         Effects.spawnImpactSpark(hit.point, 0xff3355);
       } else {
         Effects.spawnImpactSpark(hit.point, 0x9fdcff);
@@ -1145,6 +1193,7 @@
     Player.health -= remaining;
     AudioEngine.hurt();
     flashDamage();
+    Player.hitReactT = 1; // small camera punch, eased out in updatePlayer
     if (Player.health <= 0) {
       Player.health = 0;
       playerDie();
@@ -1160,10 +1209,12 @@
     Player.scoped = false;
     rightDown = false;
     document.getElementById("scope-overlay").classList.remove("show");
+    if (Game.overdrive) endOverdrive();
+    Game.sync = Math.floor(Game.sync * 0.5); updateSyncHUD();
     Game.deaths++;
     document.getElementById("death-count").textContent = Game.deaths;
     centerMessage("ELIMINATED");
-    setTimeout(() => { resetPlayer(); }, 2200);
+    setTimeout(() => { if (Game.running && !Game.ended) resetPlayer(); }, 2200);
   }
 
   // Collision: resolve movement against solidBoxes (expanded by player radius), axis-separated
@@ -1173,7 +1224,7 @@
       const minX = box.min.x - r, maxX = box.max.x + r;
       const minZ = box.min.z - r, maxZ = box.max.z + r;
       const minY = box.min.y, maxY = box.max.y;
-      if (newPos.y + 1.8 < minY || newPos.y > maxY + 3) continue; // rough vertical gate (allow standing on platforms handled separately)
+      if (newPos.y + 1.8 < minY || newPos.y >= maxY - 0.15) continue; // feet on/above the top = standing on it // rough vertical gate (allow standing on platforms handled separately)
       if (newPos.x > minX && newPos.x < maxX && newPos.z > minZ && newPos.z < maxZ) {
         // push out along smallest penetration axis
         const dLeft = newPos.x - minX, dRight = maxX - newPos.x;
@@ -1219,12 +1270,17 @@
 
   function updatePlayer(dt) {
     if (!Player.alive) return;
-    Player.aiming = rightDown && !Player.sprinting;
-    Player.sprinting = keys[Bindings.sprint] && !Player.crouching && (keys[Bindings.forward] || keys[Bindings.left] || keys[Bindings.back] || keys[Bindings.right]);
+    if (Player.reloading && performance.now() - Player.reloadStart >= Player.reloadDuration) finishReload();
+    const wasSprint = !!Player.sprinting, wasCrouch = !!Player.crouching;
     Player.crouching = !!keys[Bindings.crouch];
+    Player.sprinting = !!keys[Bindings.sprint] && !Player.crouching && !!(keys[Bindings.forward] || keys[Bindings.left] || keys[Bindings.back] || keys[Bindings.right]);
+    Player.aiming = rightDown && !Player.sprinting;
+    // Crouch while sprinting on the ground = SLIDE (handled in the movement block)
+    if (Player.crouching && !wasCrouch && wasSprint && Player.onGround && !Player.mantling) Player.slideStart = true;
+    if (!Player.crouching) Player.slideT = 0;
 
     // recoil recovery
-    recoilPitch *= 0.9; recoilYaw *= 0.85;
+    recoilPitch *= Math.pow(0.9, dt * 60); recoilYaw *= Math.pow(0.85, dt * 60);
     camera.rotation.set(0, 0, 0);
     camera.rotation.order = "YXZ";
     camera.rotation.y = Player.yaw + recoilYaw;
@@ -1267,6 +1323,16 @@
     if (move.length() > 1) move.normalize();
 
     let speed = Player.crouching ? 2.4 : Player.sprinting ? 7.2 : 4.4;
+    if (Player.slideStart) {
+      Player.slideStart = false;
+      if (move.lengthSq() > 0.01) { Player.slideT = 0.7; Player.slideDir = move.clone().normalize(); }
+    }
+    if (Player.slideT > 0 && Player.onGround) {
+      Player.slideT -= dt;
+      const k = Math.max(0, Player.slideT / 0.7);
+      move.copy(Player.slideDir);
+      speed = 2.6 + 7.2 * k * k;
+    } else Player.slideT = 0;
     if (Player.aiming) speed *= 0.65;
 
     const newPos = Player.pos.clone().addScaledVector(move, speed * dt);
@@ -1275,10 +1341,19 @@
 
     // vertical
     const groundY = groundHeightAt(newPos.x, newPos.z, Player.pos.y);
+    const wasOnGround = Player.onGround;
     Player.velY -= 14 * dt;
     let newY = Player.pos.y + Player.velY * dt;
-    if (newY <= groundY) { newY = groundY; Player.velY = 0; Player.onGround = true; }
-    else Player.onGround = false;
+    if (newY <= groundY) {
+      // Landing squash: a hard enough fall (not just stepping off a curb)
+      // triggers a brief downward camera/weapon dip that springs back —
+      // scaled by how much downward speed we were carrying.
+      if (!wasOnGround && Player.velY < -3.2) {
+        Player.landSquashT = Math.min(1, -Player.velY / 10);
+        AudioEngine.land();
+      }
+      newY = groundY; Player.velY = 0; Player.onGround = true;
+    } else Player.onGround = false;
 
     Player.pos.set(newPos.x, newY, newPos.z);
 
@@ -1292,27 +1367,55 @@
       Player.bobT += dt * (Player.sprinting ? 14 : 9);
     } else { Player.bobT *= 0.9; }
 
+    // Idle breathing: while standing still, a slow gentle vertical sway so
+    // the view never looks frozen between footsteps. Fades out the instant
+    // movement starts so it never fights the footstep bob.
+    const isMovingNow = move.lengthSq() > 0 && Player.onGround;
+    Player.idlePhase += dt * (isMovingNow ? 0 : 1.1);
+    const breatheY = isMovingNow ? 0 : Math.sin(Player.idlePhase) * 0.012;
+
+    // Landing squash decays quickly back to zero after triggering above.
+    Player.landSquashT = Math.max(0, Player.landSquashT - dt * 5);
+    const squashY = -Player.landSquashT * 0.12;
+
     const targetHeight = Player.crouching ? CROUCH_HEIGHT : EYE_HEIGHT;
-    const bobY = Math.sin(Player.bobT) * (Player.crouching ? 0.02 : 0.045);
-    camera.position.set(Player.pos.x, Player.pos.y + targetHeight + bobY, Player.pos.z);
+    // Crouch-walk gets its own slightly slower, lower-amplitude step bob than
+    // standing movement so sneaking around low cover reads differently from
+    // a normal jog rather than just being a height change.
+    const bobAmp = Player.crouching ? 0.018 : 0.045;
+    const bobY = Math.sin(Player.bobT) * bobAmp;
+    camera.position.set(Player.pos.x, Player.pos.y + targetHeight + bobY + breatheY + squashY, Player.pos.z);
+
+    // Hit reaction: a short decaying camera micro-shake layered on top of the
+    // damage vignette flash, so taking a hit has a physical, not just visual, jolt.
+    if (Player.hitReactT > 0) {
+      camera.position.x += (Math.random() - 0.5) * 0.02 * Player.hitReactT;
+      camera.position.y += (Math.random() - 0.5) * 0.02 * Player.hitReactT;
+      Player.hitReactT = Math.max(0, Player.hitReactT - dt * 4.5);
+    }
 
     // Lean / take-cover: hold Q to lean left or E to lean right, peeking the
     // camera sideways around a corner or over low cover without exposing the
     // player's whole body — release to snap back upright.
     const leanTarget = (keys[Bindings.leanLeft] && !keys[Bindings.leanRight]) ? -1 : (keys[Bindings.leanRight] && !keys[Bindings.leanLeft]) ? 1 : 0;
-    Player.lean += (leanTarget - Player.lean) * 0.18;
+    Player.lean += (leanTarget - Player.lean) * (1 - Math.pow(0.82, dt * 60));
     if (Math.abs(Player.lean) > 0.001) {
       camera.position.addScaledVector(right, Player.lean * 0.5);
       camera.position.y -= Math.abs(Player.lean) * 0.06;
     }
     camera.rotation.z = -Player.lean * 0.13;
 
+    // Sprint lean: smoothed 0..1 toward "fully sprinting", used below to tilt
+    // the weapon forward/down while running and ease back the moment the
+    // player stops or starts aiming.
+    Player.sprintLean += ((Player.sprinting ? 1 : 0) - Player.sprintLean) * 0.15;
+
     // ADS weapon offset — the sniper gets a true scope (tight zoom + reticle
     // overlay, weapon model hidden) instead of the normal hip-raised ADS.
     const vm = viewModels[currentWeaponKey()];
     const isScoped = Player.aiming && currentWeaponKey() === "sniper";
     const targetX = Player.aiming ? 0 : vm.userData.baseX;
-    const targetZFov = isScoped ? 12 : Player.aiming ? 55 : 75;
+    const targetZFov = (isScoped ? 12 : Player.aiming ? 55 : 75) + (Game.overdrive && !isScoped ? 10 : 0) + (Player.slideT > 0 ? 6 : 0);
     vm.position.x += (targetX - vm.position.x) * 0.25;
     camera.fov += (targetZFov - camera.fov) * (isScoped ? 0.35 : 0.2);
     camera.updateProjectionMatrix();
@@ -1321,18 +1424,28 @@
     document.getElementById("scope-overlay").classList.toggle("show", isScoped);
     Player.scoped = isScoped;
 
-    // Reload animation: the weapon dips down and tilts as the mag comes out,
-    // then rises back to its resting pose as the fresh mag seats — timed to
-    // exactly match the weapon's reload duration, no matter how long it is.
+    // Weapon vertical pose: composites reload dip, sprint-lean dip, jump
+    // takeoff kick and landing squash into a single target height each frame
+    // so they layer cleanly instead of fighting each other frame-to-frame.
+    Player.jumpKickT = Math.max(0, Player.jumpKickT - dt * 6);
+    const sprintDip = Player.sprintLean * 0.035;
+    const jumpDip = Player.jumpKickT * 0.05;
+    const landDip = Player.landSquashT * 0.06;
     if (Player.reloading) {
+      // Reload animation: the weapon dips down and tilts as the mag comes
+      // out, then rises back to its resting pose as the fresh mag seats —
+      // timed to exactly match the weapon's reload duration.
       const t = Math.min(1, (performance.now() - Player.reloadStart) / Player.reloadDuration);
       const dip = Math.sin(Math.PI * t) * 0.14;
-      vm.position.y = vm.userData.baseY - dip;
+      vm.position.y = vm.userData.baseY - dip - jumpDip - landDip;
       vm.rotation.x = dip * 1.5;
     } else {
-      vm.position.y += (vm.userData.baseY - vm.position.y) * 0.3;
+      const targetY = vm.userData.baseY - sprintDip - jumpDip - landDip;
+      vm.position.y += (targetY - vm.position.y) * 0.3;
       vm.rotation.x += (0 - vm.rotation.x) * 0.3;
     }
+    // Sprint lean tilts the weapon slightly as it dips, on top of the height offset above.
+    vm.rotation.z += ((Player.sprintLean * 0.15) - vm.rotation.z) * 0.2;
 
     // fire input (auto vs semi)
     const now = performance.now();
@@ -1350,15 +1463,54 @@
   const Bots = { list: [] };
   const BOT_NAMES = ["VIPER", "GHOST", "RAZOR", "NOVA", "SLATE", "ECHO", "TALON", "HAVOC"];
 
-  function createBot(idx, team) {
+  // ------------------------------------------------------------------------
+  // BOT ARCHETYPES — four visually and behaviourally distinct bot classes so
+  // not every hostile is a palette-swap of the same model. Each type tunes
+  // silhouette scale, glow colors, carried weapon and AI engagement style.
+  // ------------------------------------------------------------------------
+  const BOT_TYPES = {
+    scout: {
+      label: "SCOUT", weaponKey: "smg", scale: 0.86,
+      healthMult: 0.78, speedMult: 1.3,
+      bodyColor: 0x18324a, trimColor: 0x0d1c2b, visorColor: 0x00e5ff, coreColor: null,
+      aggression: "balanced", cadenceMult: 0.85, dmgMult: 0.85, stealth: false, damaged: false,
+    },
+    breacher: {
+      label: "BREACHER", weaponKey: "rifle", scale: 1.24,
+      healthMult: 1.7, speedMult: 0.76,
+      bodyColor: 0x3a2410, trimColor: 0x201406, visorColor: 0xff9500, coreColor: 0xff9500,
+      aggression: "tank", cadenceMult: 1.1, dmgMult: 1.15, stealth: false, damaged: false,
+    },
+    phantom: {
+      label: "PHANTOM", weaponKey: "sniper", scale: 0.96,
+      healthMult: 0.85, speedMult: 1.0,
+      bodyColor: 0x0d0d16, trimColor: 0x07070c, visorColor: 0xb060ff, coreColor: 0xb060ff,
+      aggression: "sniper", cadenceMult: 1.6, dmgMult: 1.4, stealth: true, damaged: false,
+    },
+    berserk: {
+      label: "BERSERK", weaponKey: "smg", scale: 1.08,
+      healthMult: 1.15, speedMult: 1.45,
+      bodyColor: 0x3a1010, trimColor: 0x1c0808, visorColor: 0xff2222, coreColor: 0xff2222,
+      aggression: "rush", cadenceMult: 0.6, dmgMult: 1.0, stealth: false, damaged: true,
+    },
+  };
+  const BOT_TYPE_KEYS = Object.keys(BOT_TYPES);
+
+  function createBot(idx, team, typeKey) {
     /*
-      BLOCKY CHARACTER — original NEON STRIKE "Neon Rabbit" design.
-      Built entirely from BoxGeometry so it stays lightweight and has the
-      chunky Krunker-style silhouette: square head, box torso, block limbs,
-      boots, hair blocks, bunny ears and a small tactical weapon.
+      BLOCKY CHARACTER — original NEON STRIKE design, built entirely from
+      BoxGeometry so it stays lightweight with a chunky silhouette: square
+      head, box torso, block limbs, boots and a carried weapon. All body
+      parts sit inside a `rig` sub-group so each archetype can be scaled
+      (slim scout vs. hulking breacher) around the feet without disturbing
+      the floating health bar / name tag, which stay unscaled.
     */
+    const typeDef = BOT_TYPES[typeKey] || BOT_TYPES.scout;
     const group = new THREE.Group();
+    const rig = new THREE.Group();
+    group.add(rig);
     const teamColor = team === "red" ? 0xff2d55 : 0x2d8cff;
+    const visorColor = typeDef.visorColor;
 
     const mat = (color, emissive = 0x000000, intensity = 0) =>
       new THREE.MeshStandardMaterial({
@@ -1368,13 +1520,16 @@
 
     const skinMat = mat(0xf0c7b7);
     const hairMat = mat(0x161923, 0x05060a, 0.15);
-    const dressMat = mat(0x253b69, teamColor, 0.10);
-    const apronMat = mat(0xe8e7df);
-    const darkMat = mat(0x171b24);
+    const dressMat = mat(typeDef.bodyColor, typeDef.damaged ? visorColor : teamColor, typeDef.damaged ? 0.22 : 0.10);
+    const apronMat = mat(typeDef.damaged ? 0x2a2a2a : 0xe8e7df);
+    const darkMat = mat(typeDef.trimColor);
     const redMat = mat(0x8f1e32, teamColor, 0.08);
     const bootMat = mat(0x0b0d12);
-    const eyeMat = new THREE.MeshBasicMaterial({ color: 0x8cffce });
-    const visorMat = new THREE.MeshBasicMaterial({ color: teamColor });
+    const eyeMat = new THREE.MeshBasicMaterial({ color: visorColor });
+    const visorMat = new THREE.MeshBasicMaterial({ color: visorColor });
+    const coreMat = typeDef.coreColor
+      ? new THREE.MeshBasicMaterial({ color: typeDef.coreColor, transparent: true, opacity: 0.95 })
+      : null;
 
     const meshes = [];
 
@@ -1385,7 +1540,7 @@
       mesh.rotation.set(rot[0], rot[1], rot[2]);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
-      group.add(mesh);
+      rig.add(mesh);
       meshes.push(mesh);
       return mesh;
     }
@@ -1394,7 +1549,7 @@
     const legL = box("legL", [0.20, 0.62, 0.22], [-0.19, 0.58, 0], darkMat);
     const legR = box("legR", [0.20, 0.62, 0.22], [ 0.19, 0.58, 0], darkMat);
 
-    // Checker-ish lower leg panels for the gothic outfit.
+    // Checker-ish lower leg panels.
     box("sockL", [0.205, 0.25, 0.23], [-0.19, 0.31, 0], apronMat);
     box("sockR", [0.205, 0.25, 0.23], [ 0.19, 0.31, 0], apronMat);
 
@@ -1402,14 +1557,19 @@
     box("bootL", [0.25, 0.18, 0.38], [-0.19, 0.12, 0.055], bootMat);
     box("bootR", [0.25, 0.18, 0.38], [ 0.19, 0.12, 0.055], bootMat);
 
-    // Main torso and skirt/apron.
+    // Main torso.
     const body = box("body", [0.72, 0.72, 0.40], [0, 1.20, 0], dressMat);
     box("waist", [0.62, 0.16, 0.36], [0, 0.86, 0], darkMat);
     box("skirt", [0.86, 0.30, 0.48], [0, 0.72, 0], dressMat);
     box("apron", [0.48, 0.44, 0.035], [0, 0.80, 0.245], apronMat);
 
-    // Red ribbon/chest accent.
-    box("chestRibbon", [0.18, 0.32, 0.035], [0, 1.34, 0.222], redMat);
+    // Chest accent — a glowing power core for archetypes that have one
+    // (Breacher / Phantom / Berserk), otherwise a plain ribbon (Scout).
+    if (coreMat) {
+      box("chestCore", [0.16, 0.20, 0.06], [0, 1.36, 0.225], coreMat);
+    } else {
+      box("chestRibbon", [0.18, 0.32, 0.035], [0, 1.34, 0.222], redMat);
+    }
     box("belt", [0.78, 0.08, 0.42], [0, 1.00, 0], darkMat);
 
     // Block arms + gloves.
@@ -1426,32 +1586,55 @@
     box("hairL", [0.12, 0.48, 0.48], [-0.29, 1.86, -0.005], hairMat);
     box("hairR", [0.12, 0.48, 0.48], [ 0.29, 1.86, -0.005], hairMat);
 
-    // Simple glowing eyes/visor on the front (+Z).
+    // Glowing eyes/visor on the front (+Z), tinted per archetype.
     box("eyeL", [0.10, 0.055, 0.025], [-0.12, 1.86, 0.242], eyeMat);
     box("eyeR", [0.10, 0.055, 0.025], [ 0.12, 1.86, 0.242], eyeMat);
 
-    // Bunny ears — blocky, original silhouette.
+    // Ears — blocky, original silhouette.
     box("earL", [0.16, 0.52, 0.14], [-0.17, 2.39, 0], hairMat, [0, 0, -0.12]);
     box("earR", [0.16, 0.52, 0.14], [ 0.17, 2.39, 0], hairMat, [0, 0,  0.12]);
     box("earInnerL", [0.07, 0.30, 0.025], [-0.17, 2.40, 0.075], redMat, [0, 0, -0.12]);
     box("earInnerR", [0.07, 0.30, 0.025], [ 0.17, 2.40, 0.075], redMat, [0, 0,  0.12]);
 
-    // Tiny tactical sidearm held forward in the right hand.
-    box("gunGrip", [0.10, 0.25, 0.10], [0.56, 0.86, 0.13], darkMat, [0.25, 0, 0]);
-    box("gunBody", [0.12, 0.12, 0.38], [0.56, 0.96, 0.22], darkMat);
-    box("gunBarrel", [0.07, 0.07, 0.28], [0.56, 0.98, 0.50], visorMat);
+    // Carried weapon — proportions vary by weaponKey so an SMG, an AR and a
+    // sniper rifle actually read differently in silhouette.
+    let gunBarrel;
+    if (typeDef.weaponKey === "sniper") {
+      box("gunGrip", [0.10, 0.25, 0.10], [0.56, 0.86, 0.10], darkMat, [0.2, 0, 0]);
+      box("gunBody", [0.11, 0.12, 0.58], [0.56, 0.98, 0.30], darkMat);
+      box("gunScope", [0.08, 0.08, 0.16], [0.56, 1.07, 0.20], darkMat);
+      gunBarrel = box("gunBarrel", [0.055, 0.055, 0.42], [0.56, 0.98, 0.72], visorMat);
+    } else if (typeDef.weaponKey === "rifle") {
+      box("gunGrip", [0.10, 0.25, 0.10], [0.56, 0.86, 0.13], darkMat, [0.25, 0, 0]);
+      box("gunStock", [0.10, 0.12, 0.16], [0.56, 0.96, -0.02], darkMat);
+      box("gunBody", [0.13, 0.14, 0.42], [0.56, 0.98, 0.26], darkMat);
+      box("gunMag", [0.07, 0.16, 0.08], [0.56, 0.80, 0.18], darkMat, [0.3, 0, 0]);
+      gunBarrel = box("gunBarrel", [0.075, 0.075, 0.32], [0.56, 1.00, 0.56], visorMat);
+    } else {
+      // smg — short and compact
+      box("gunGrip", [0.10, 0.25, 0.10], [0.56, 0.86, 0.13], darkMat, [0.25, 0, 0]);
+      box("gunBody", [0.12, 0.12, 0.38], [0.56, 0.96, 0.22], darkMat);
+      gunBarrel = box("gunBarrel", [0.07, 0.07, 0.28], [0.56, 0.98, 0.50], visorMat);
+    }
 
-    // Team marker on the back/shoulder.
-    box("teamBadge", [0.22, 0.18, 0.025], [0, 1.40, -0.215], visorMat);
+    // Team marker on the back/shoulder — keeps team identity readable even
+    // though the visor/core color now encodes archetype instead.
+    box("teamBadge", [0.22, 0.18, 0.025], [0, 1.40, -0.215], new THREE.MeshBasicMaterial({ color: teamColor }));
+
+    // Scale the whole rig from the feet up — this is what makes the Breacher
+    // read as hulking and the Scout as slim without hand-tuning every box.
+    rig.scale.set(typeDef.scale, typeDef.scale, typeDef.scale);
 
     scene.add(group);
 
     const sp = randomSpawn(team);
     group.position.copy(sp);
 
-    // Floating health bar.
+    // Floating health bar — Y offset scales with archetype height so it still
+    // sits just above a Breacher's taller head.
     const barGroup = new THREE.Group();
-    barGroup.position.set(0, 2.75, 0);
+    const topY = 2.75 * typeDef.scale;
+    barGroup.position.set(0, topY, 0);
     const BAR_W = 0.9, BAR_H = 0.09;
 
     const bg = new THREE.Mesh(
@@ -1471,42 +1654,52 @@
     barGroup.add(bg, fill);
     group.add(barGroup);
 
-    // Name tag.
+    // Name tag — shows the archetype under the callsign so players can read
+    // what they're up against at a glance.
     const nameCanvas = document.createElement("canvas");
-    nameCanvas.width = 256; nameCanvas.height = 48;
+    nameCanvas.width = 256; nameCanvas.height = 64;
     const nctx = nameCanvas.getContext("2d");
-    nctx.clearRect(0, 0, 256, 48);
+    nctx.clearRect(0, 0, 256, 64);
     nctx.font = "bold 28px Orbitron, sans-serif";
     nctx.fillStyle = team === "red" ? "#ff9aad" : "#9ac9ff";
     nctx.textAlign = "center";
     const botName = BOT_NAMES[idx % BOT_NAMES.length] + "-" + (idx + 1);
-    nctx.fillText(botName, 128, 34);
+    nctx.fillText(botName, 128, 30);
+    nctx.font = "bold 16px Orbitron, sans-serif";
+    nctx.fillStyle = "#" + visorColor.toString(16).padStart(6, "0");
+    nctx.fillText(typeDef.label, 128, 52);
 
     const nameTex = new THREE.CanvasTexture(nameCanvas);
     const nameSprite = new THREE.Sprite(
       new THREE.SpriteMaterial({ map: nameTex, transparent: true, depthTest: false })
     );
-    nameSprite.scale.set(1.1, 0.2, 1);
-    nameSprite.position.set(0, 2.96, 0);
+    nameSprite.scale.set(1.1, 0.28, 1);
+    nameSprite.position.set(0, topY + 0.22, 0);
     nameSprite.renderOrder = 999;
     group.add(nameSprite);
 
+    const maxHealth = Math.round(100 * typeDef.healthMult);
+
     return {
       id: idx, name: botName,
-      group,
+      typeKey, typeDef,
+      group, rig,
       bodyMesh: body,
       headMesh: head,
-      legL, legR, armL, armR,
+      legL, legR, armL, armR, gunBarrel,
+      dressMat, coreMat,
       allMeshes: meshes,
       team,
-      health: 100, maxHealth: 100, alive: true,
+      health: maxHealth, maxHealth, alive: true,
       state: "patrol",
       target: randomPatrolPoint(team),
-      lastShot: 0, weapon: WEAPONS.rifle,
+      lastShot: 0, weapon: WEAPONS[typeDef.weaponKey] || WEAPONS.rifle,
       respawnAt: 0,
-      speed: 2.6 * currentDifficulty().speedMult,
-      radius: 0.42,
+      speed: 2.6 * typeDef.speedMult * currentDifficulty().speedMult,
+      radius: 0.42 * typeDef.scale,
       animPhase: Math.random() * Math.PI * 2,
+      breathPhase: Math.random() * Math.PI * 2,
+      flinchT: 0, recoilT: 0, leanRot: 0,
       barFill: fill, barGroup, nameSprite, BAR_W,
       lastPos: group.position.clone(),
       stuckTimer: 0,
@@ -1529,35 +1722,62 @@
     bot.barGroup.quaternion.copy(camera.quaternion);
   }
 
-  function damageBot(bot, dmg, isHead) {
+  function damageBot(bot, dmg, isHead, shotDir) {
     if (!bot.alive) return;
     bot.health -= dmg;
-    if (bot.health <= 0) { bot.health = 0; killBot(bot); }
+    // Hit reaction: a quick flinch away from the shot direction, plus a
+    // bright emissive pulse on the torso so a hit always reads clearly even
+    // mid-firefight. killBot() below overrides this with the death ragdoll.
+    bot.flinchT = 1;
+    bot.flinchDir = shotDir ? shotDir.clone() : new THREE.Vector3(0, 0, 1);
+    AudioEngine.flinch();
+    if (bot.health <= 0) { bot.health = 0; killBot(bot, shotDir); }
     updateBotHealthBar(bot);
   }
 
-  function killBot(bot) {
+  function killBot(bot, shotDir) {
     bot.alive = false;
     Game.kills++;
     document.getElementById("kill-count").textContent = Game.kills;
     addKillFeed(`YOU ELIMINATED ${bot.name}`);
+    addSync(22);
+    if (Game.overdrive) Game.overdriveT = Math.min(OD_DUR, Game.overdriveT + 1.2);
     AudioEngine.kill();
-    // simple death animation: sink & fade
+
+    // Death ragdoll/fall: the bot topples in the direction it was shot
+    // (falls away from the shot), limbs splay outward as it goes down, then
+    // the whole rig sinks slightly into the ground and fades out.
+    const fallAxis = new THREE.Vector3(shotDir ? shotDir.z : 0, 0, shotDir ? -shotDir.x : 1).normalize();
+    const fallSign = Math.random() < 0.5 ? 1 : -1;
     const startY = bot.group.position.y;
+    const startPos = bot.group.position.clone();
     let t = 0;
     const anim = setInterval(() => {
-      t += 0.05;
-      bot.group.position.y = startY - t * 1.2;
-      bot.group.rotation.z = t * 1.2;
+      t += 0.045;
+      const tt = Math.min(1, t);
+      const ease = 1 - Math.pow(1 - tt, 2); // fast start, settle at the end
+      // Topple onto the ground (~90°) around the fall axis, staggering a
+      // step backward as it goes down for a less robotic collapse.
+      bot.group.quaternion.setFromAxisAngle(fallAxis, ease * (Math.PI / 2) * fallSign);
+      bot.group.position.x = startPos.x - fallAxis.z * ease * 0.5 * fallSign;
+      bot.group.position.z = startPos.z + fallAxis.x * ease * 0.5 * fallSign;
+      bot.group.position.y = startY - ease * 0.15;
+      // Limbs splay outward as the body goes down.
+      if (bot.armL) bot.armL.rotation.z = -0.08 - ease * 1.1;
+      if (bot.armR) bot.armR.rotation.z = 0.08 + ease * 1.1;
+      if (bot.legL) bot.legL.rotation.x = ease * 0.6;
+      if (bot.legR) bot.legR.rotation.x = -ease * 0.4;
+      // Fade out only after the fall has mostly settled.
+      const fade = Math.max(0, (t - 0.7) / 0.3);
       const fadeMeshes = bot.allMeshes || [bot.bodyMesh, bot.headMesh];
       fadeMeshes.forEach((mesh) => {
         if (mesh && mesh.material && "opacity" in mesh.material) {
-          mesh.material.opacity = Math.max(0, 1 - t);
+          mesh.material.opacity = Math.max(0, 1 - fade);
           mesh.material.transparent = true;
         }
       });
       if (t >= 1) { clearInterval(anim); bot.group.visible = false; }
-    }, 50);
+    }, 45);
     bot.respawnAt = performance.now() + 3500;
 
     checkScoreLimit();
@@ -1567,7 +1787,12 @@
     const sp = randomSpawn(bot.team);
     bot.group.position.copy(sp);
     bot.group.position.y = 0;
-    bot.group.rotation.z = 0;
+    bot.group.quaternion.set(0, 0, 0, 1);
+    bot.group.rotation.set(0, 0, 0);
+    if (bot.armL) bot.armL.rotation.set(0, 0, -0.08);
+    if (bot.armR) bot.armR.rotation.set(0, 0, 0.08);
+    if (bot.legL) bot.legL.rotation.set(0, 0, 0);
+    if (bot.legR) bot.legR.rotation.set(0, 0, 0);
     (bot.allMeshes || [bot.bodyMesh, bot.headMesh]).forEach((mesh) => {
       if (mesh && mesh.material && "opacity" in mesh.material) {
         mesh.material.opacity = 1;
@@ -1578,6 +1803,7 @@
     bot.health = bot.maxHealth;
     bot.alive = true;
     bot.state = "patrol";
+    bot.flinchT = 0; bot.recoilT = 0; bot.leanRot = 0;
     bot.target.set(sp.x, 0, sp.z);
     bot.lastPos.copy(bot.group.position);
     bot.stuckTimer = 0;
@@ -1588,9 +1814,13 @@
     Bots.list.forEach((b) => scene.remove(b.group));
     Bots.list = [];
     const count = Game.mode === "practice" ? 4 : Game.mode === "tdm" ? 8 : 6;
+    // Cycle through all four archetypes (shuffled) so a match always sees a
+    // mix rather than clumping the same type together.
+    const shuffledTypes = [...BOT_TYPE_KEYS].sort(() => Math.random() - 0.5);
     for (let i = 0; i < count; i++) {
       const team = Game.mode === "tdm" ? (i % 2 === 0 ? "red" : "blue") : "red";
-      Bots.list.push(createBot(i, team));
+      const typeKey = shuffledTypes[i % shuffledTypes.length];
+      Bots.list.push(createBot(i, team, typeKey));
     }
   }
 
@@ -1610,17 +1840,34 @@
       if (now > bot.respawnAt) respawnBot(bot);
       return;
     }
-    // Friendly bots on player's team in TDM don't target the player
-    const hostileToPlayer = !(Game.mode === "tdm" && bot.team === "blue");
-
+    // TDM bots now understand teams: they can fight enemy bots instead of
+    // tunnel-visioning the human. They still prioritize the player when visible.
+    const hostileToPlayer = !(Game.mode === "tdm" && bot.team === Player.team);
     const eyePos = bot.group.position.clone().add(new THREE.Vector3(0, 1.75, 0));
     const playerPos = camera.position.clone();
     const distToPlayer = eyePos.distanceTo(playerPos);
     const canSeePlayer = hostileToPlayer && Player.alive && distToPlayer < 45 && hasLineOfSight(eyePos, playerPos);
 
-    if (canSeePlayer) {
+    // Resolve player visibility before scanning enemy bots. Previously this
+    // block referenced eyePos/playerPos/canSeePlayer before their declarations,
+    // causing a ReferenceError during the first bot update.
+    const enemyBots = Game.mode === "tdm" ? Bots.list.filter(b => b.alive && b.team !== bot.team) : [];
+    let enemyTarget = null;
+    let enemyDist = Infinity;
+    for (const eb of enemyBots) {
+      const d = bot.group.position.distanceTo(eb.group.position);
+      const ebPos = eb.group.position.clone().add(new THREE.Vector3(0, 1.5, 0));
+      if (d < enemyDist && d < 42 && hasLineOfSight(eyePos, ebPos)) {
+        enemyTarget = eb;
+        enemyDist = d;
+      }
+    }
+    if (canSeePlayer && !bot.reactAt) bot.reactAt = now + currentDifficulty().reactionMs * (0.75 + Math.random()*0.7);
+
+    if (canSeePlayer || enemyTarget) {
       bot.state = "chase";
       bot.lastSeenPlayerAt = now;
+      bot.combatTarget = canSeePlayer ? "player" : enemyTarget.id;
     } else if (bot.state === "chase" && now - (bot.lastSeenPlayerAt || 0) > 2500) {
       bot.state = "patrol";
       bot.target = randomPatrolPoint(bot.team);
@@ -1628,31 +1875,45 @@
 
     let isMoving = false;
     if (bot.state === "chase") {
-      const toPlayer = playerPos.clone().sub(bot.group.position); toPlayer.y = 0;
+      const targetPos = bot.combatTarget === "player" ? playerPos : (Bots.list.find(b => b.id === bot.combatTarget)?.group.position || playerPos);
+      const toPlayer = targetPos.clone().sub(bot.group.position); toPlayer.y = 0;
       const dist = toPlayer.length();
       const dir = toPlayer.clone().normalize();
 
       // Strafe side-to-side while engaging at combat range for less static-feeling bots;
-      // close the distance if too far, back off slightly if too close.
+      // close the distance if too far, back off slightly if too close. The
+      // exact thresholds/strafe weight depend on the bot's archetype so a
+      // Breacher holds ground, a Phantom kites at range, and a Berserk just
+      // charges regardless of distance.
       bot.strafeTimer -= dt;
       if (bot.strafeTimer <= 0) { bot.strafeDir *= -1; bot.strafeTimer = 1.2 + Math.random() * 1.8; }
       const perp = new THREE.Vector3(-dir.z, 0, dir.x);
 
+      const aggro = bot.typeDef.aggression;
+      let farThreshold = 16, nearThreshold = 6, strafeWeight = 0.7;
+      if (aggro === "tank") { farThreshold = 20; nearThreshold = 4; strafeWeight = 0.4; }
+      else if (aggro === "sniper") { farThreshold = Infinity; nearThreshold = 15; strafeWeight = 0.25; }
+      else if (aggro === "rush") { farThreshold = Infinity; nearThreshold = -1; strafeWeight = 0.9; }
+
       const moveVec = new THREE.Vector3();
-      if (dist > 16) moveVec.add(dir);              // too far: close in
-      else if (dist < 6) moveVec.sub(dir);           // too close: back off
-      moveVec.addScaledVector(perp, bot.strafeDir * 0.7); // always strafe a bit
+      if (aggro === "rush") moveVec.add(dir);         // always closes in, never backs off
+      else if (dist > farThreshold) moveVec.add(dir);  // too far: close in
+      else if (dist < nearThreshold) moveVec.sub(dir); // too close: back off
+      moveVec.addScaledVector(perp, bot.strafeDir * strafeWeight); // always strafe a bit
       if (moveVec.lengthSq() > 0) { moveVec.normalize(); isMoving = true; }
 
       bot.group.position.addScaledVector(moveVec, bot.speed * dt);
-      bot.group.lookAt(playerPos.x, bot.group.position.y, playerPos.z);
+      bot.group.lookAt(targetPos.x, bot.group.position.y, targetPos.z);
 
       // shoot at player — cadence scales with the selected bot difficulty
+      // and the archetype's own cadence multiplier (Berserk sprays fast,
+      // Phantom's sniper shot is slow and deliberate).
       const diff = currentDifficulty();
-      if (Game.mode !== "practice" && now - bot.lastShot > diff.fireMin + Math.random() * (diff.fireMax - diff.fireMin)) {
+      const cadenceMult = bot.typeDef.cadenceMult || 1;
+      if (Game.mode !== "practice" && now >= (bot.reactAt || 0) && now - bot.lastShot > (diff.fireMin + Math.random() * (diff.fireMax - diff.fireMin)) * cadenceMult) {
         bot.lastShot = now;
-        fireBotAtPlayer(bot, eyePos, playerPos);
-      } else if (Game.mode === "practice" && now - bot.lastShot > 2200) {
+        fireBotAtPlayer(bot, eyePos, targetPos, 1, targetPos !== playerPos);
+      } else if (Game.mode === "practice" && now - bot.lastShot > 2200 * cadenceMult) {
         bot.lastShot = now; // practice bots shoot rarely & weakly, regardless of difficulty
         fireBotAtPlayer(bot, eyePos, playerPos, 0.3);
       }
@@ -1678,19 +1939,33 @@
       }
     }
 
+    // Phantom stealth: semi-cloaks while patrolling/unseen, and snaps back to
+    // full visibility the instant it engages — a soft decloak rather than a
+    // hard pop so it still reads fairly in combat.
+    if (bot.typeDef.stealth) {
+      const targetOpacity = bot.state === "chase" ? 1 : 0.4;
+      bot.allMeshes.forEach((mesh) => {
+        if (!mesh.material) return;
+        mesh.material.transparent = true;
+        mesh.material.opacity += (targetOpacity - mesh.material.opacity) * 0.06;
+      });
+    }
+
     bot.lastPos.copy(bot.group.position);
     resolveCollision(bot.group.position);
     animateBotLimbs(bot, dt, isMoving);
     updateBotHealthBar(bot);
   }
 
-  // Simple walk-cycle animation: swings the arm/leg pairs opposite each other
-  // (like a marching gait) while a bot is actually moving, and eases the limbs
-  // back to a relaxed idle pose the moment it stops — so patrolling and
-  // chasing bots read as alive rather than sliding around like static props.
+  // Full limb/body animation rig for bots, layered in priority order:
+  // walk cycle -> idle breathing -> sprint lean -> hit-reaction flinch ->
+  // firing recoil. Runs every frame for every living bot.
   function animateBotLimbs(bot, dt, moving) {
     if (!bot.legL || !bot.legR || !bot.armL || !bot.armR) return;
     const cycleSpeed = bot.state === "chase" ? 9 : 6.5;
+
+    // Walk cycle: swings the arm/leg pairs opposite each other (marching
+    // gait) while moving, and eases the limbs back to neutral when stopped.
     if (moving) {
       bot.animPhase += dt * cycleSpeed;
       const swing = Math.sin(bot.animPhase) * 0.55;
@@ -1698,15 +1973,62 @@
       bot.legR.rotation.x = -swing;
       bot.armL.rotation.x = -swing * 0.75 - 0.08;
       bot.armR.rotation.x = swing * 0.75 - 0.08;
-      // tiny torso bounce synced to the stride for a less robotic gait
       bot.bodyMesh.position.y = 1.20 + Math.abs(Math.sin(bot.animPhase)) * 0.025;
     } else {
-      // ease back to the neutral idle pose rather than snapping to it
       bot.legL.rotation.x *= 0.85;
       bot.legR.rotation.x *= 0.85;
       bot.armL.rotation.x *= 0.85;
       bot.armR.rotation.x *= 0.85;
       bot.bodyMesh.position.y += (1.20 - bot.bodyMesh.position.y) * 0.2;
+    }
+
+    // Idle breathing: a slow chest-rise sine that never stops, so a bot
+    // standing still still reads as alive rather than a frozen prop. Kept
+    // subtle so it doesn't fight the walk-cycle bounce while moving.
+    bot.breathPhase += dt * 1.6;
+    const breathAmt = moving ? 0.006 : 0.018;
+    bot.bodyMesh.scale.y = 1 + Math.sin(bot.breathPhase) * breathAmt;
+
+    // Sprint lean: chasing bots pitch their whole rig forward, proportional
+    // to how fast they're actually moving — a Berserk in full charge leans
+    // harder than a cautious Breacher shuffling forward.
+    const leanTarget = (bot.state === "chase" && moving) ? Math.min(0.22, bot.speed * 0.045) : 0;
+    bot.leanRot += (leanTarget - bot.leanRot) * 0.12;
+    bot.rig.rotation.x = bot.leanRot;
+
+    // Hit reaction: a quick snap-back flinch that decays over ~0.35s,
+    // rocking the head/torso away from the shot and briefly flashing the
+    // chest accent brighter.
+    if (bot.flinchT > 0) {
+      bot.flinchT = Math.max(0, bot.flinchT - dt * 3.2);
+      const k = bot.flinchT;
+      bot.headMesh.rotation.x = -k * 0.35;
+      bot.bodyMesh.rotation.x = -k * 0.15;
+      if (bot.dressMat) bot.dressMat.emissiveIntensity = 0.10 + k * 1.2;
+      if (bot.coreMat) bot.coreMat.opacity = 0.95 + k * 0.05;
+    } else {
+      bot.headMesh.rotation.x *= 0.8;
+      bot.bodyMesh.rotation.x *= 0.8;
+      if (bot.dressMat) bot.dressMat.emissiveIntensity = bot.typeDef.damaged ? 0.22 : 0.10;
+    }
+
+    // Firing recoil: kicks the gun arm back and flashes the barrel each time
+    // the bot shoots, decaying quickly so rapid-fire archetypes (Berserk)
+    // still read each individual shot.
+    if (bot.recoilT > 0) {
+      bot.recoilT = Math.max(0, bot.recoilT - dt * 8);
+      bot.armR.rotation.x -= bot.recoilT * 0.4;
+      if (bot.gunBarrel && bot.gunBarrel.material) bot.gunBarrel.material.color.setHex(0xffffff);
+    } else if (bot.gunBarrel && bot.gunBarrel.material) {
+      bot.gunBarrel.material.color.setHex(bot.typeDef.visorColor);
+    }
+
+    // Core pulse for damaged/glowing archetypes — a slow ambient flicker so
+    // the Berserk's cracked core and Phantom/Breacher glow feel alive even
+    // at rest, independent of the hit-flash above.
+    if (bot.coreMat && bot.flinchT <= 0) {
+      const flicker = bot.typeDef.damaged ? (0.8 + Math.random() * 0.2) : (0.9 + Math.sin(bot.breathPhase * 2) * 0.1);
+      bot.coreMat.opacity = flicker;
     }
   }
 
@@ -1744,11 +2066,18 @@
     }
   }
 
-  function fireBotAtPlayer(bot, eyePos, playerPos, dmgMult = 1) {
+  function fireBotAtPlayer(bot, eyePos, playerPos, dmgMult = 1, botTarget = false) {
     Effects.spawnImpactSpark(eyePos.clone().addScaledVector(playerPos.clone().sub(eyePos).normalize(), 0.6), 0xff5a00);
+    bot.recoilT = 1; // triggers the firing-recoil kick/flash in animateBotLimbs
     const diff = currentDifficulty();
-    if (Math.random() < diff.hitChance) {
-      damagePlayer((10 + Math.random() * 8) * dmgMult * diff.dmgMult);
+    const jitter = diff.aimJitter * (bot.state === "chase" ? 1 : 1.25);
+    const effectiveHit = Math.max(0.08, diff.hitChance - jitter * 0.55);
+    if (Math.random() < effectiveHit) {
+      const damage = (10 + Math.random() * 8) * dmgMult * diff.dmgMult * (bot.typeDef.dmgMult || 1);
+      if (botTarget && Game.mode === "tdm") {
+        const victim = Bots.list.find(b => b.alive && b.team !== bot.team && b.group.position.distanceTo(playerPos) < 2.0);
+        if (victim) damageBot(victim, damage * 0.75, false, playerPos.clone().sub(eyePos).normalize());
+      } else { damagePlayer(damage); }
     }
   }
 
@@ -1893,6 +2222,13 @@
       Game.difficulty = btn.dataset.difficulty;
     });
   });
+  document.querySelectorAll(".mode-btn[data-loadout]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".mode-btn[data-loadout]").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      Game.loadout = btn.dataset.loadout;
+    });
+  });
 
   // ---- Key bindings UI: renders one row per action; clicking a row's button
   // arms `listeningForBind`, and the next keydown anywhere (captured at the
@@ -1955,6 +2291,7 @@
     if (isMobile) forceExitHudEditMode();
     Game.running = false;
     Game.paused = false;
+    if (Game.overdrive) endOverdrive();
     document.exitPointerLock();
     document.getElementById("hud").classList.add("hidden");
     document.getElementById("mobile-controls").classList.add("hidden");
@@ -1972,6 +2309,8 @@
     Game.paused = false;
     Game.ended = false;
     Game.kills = 0; Game.deaths = 0;
+    if (Game.overdrive) endOverdrive();
+    Game.sync = 0; updateSyncHUD();
     Game.matchTime = Game.mode === "practice" ? 999999 : 150;
     Game.timeLeft = Game.matchTime;
     document.getElementById("kill-count").textContent = 0;
@@ -1992,6 +2331,7 @@
   function endMatch(title) {
     if (Game.ended) return;
     Game.ended = true;
+    if (Game.overdrive) endOverdrive();
     Game.running = false;
     document.exitPointerLock();
     document.getElementById("end-title").textContent = title;
@@ -2288,14 +2628,85 @@
   /* ==========================================================================
      11. MAIN GAME LOOP
      ========================================================================== */
+  /* ==========================================================================
+     SYNC / OVERDRIVE (new mechanic)
+     Hits and kills charge the SYNC meter. At 100 the player can trigger
+     OVERDRIVE: hostiles drop to 35% speed (movement, fire cadence, respawns)
+     while the player stays at full speed with +50% damage and a wider FOV.
+     Kills during Overdrive extend it; dying halves the meter.
+     ========================================================================== */
+  const OD_DUR = 6, OD_SCALE = 0.35;
+  function updateSyncHUD() {
+    const wrap = document.getElementById("sync-wrap");
+    if (!wrap) return;
+    document.getElementById("sync-bar").style.width = Math.round(Game.sync) + "%";
+    const ready = Game.sync >= 100 && !Game.overdrive;
+    wrap.classList.toggle("ready", ready);
+    wrap.classList.toggle("active", Game.overdrive);
+    const tb = document.getElementById("touch-overdrive");
+    if (tb) tb.classList.toggle("ready", ready);
+    document.getElementById("sync-hint").textContent = Game.overdrive ? "OVERDRIVE" : "PRESS " + keyDisplayName(Bindings.overdrive);
+  }
+  function addSync(n) {
+    if (Game.overdrive) return;
+    const before = Game.sync;
+    Game.sync = Math.min(100, Game.sync + n);
+    if (before < 100 && Game.sync >= 100) { centerMessage("SYNC READY — PRESS " + keyDisplayName(Bindings.overdrive)); AudioEngine.hitmarker(); }
+    updateSyncHUD();
+  }
+  function activateOverdrive() {
+    if (!Game.running || Game.paused || !Player.alive || Game.overdrive || Game.sync < 100) return;
+    Game.overdrive = true;
+    Game.overdriveT = OD_DUR;
+    document.body.classList.add("overdrive");
+    centerMessage("OVERDRIVE");
+    AudioEngine.hitmarker();
+    updateSyncHUD();
+  }
+  function endOverdrive() {
+    Game.overdrive = false;
+    Game.sync = 0;
+    document.body.classList.remove("overdrive");
+    updateSyncHUD();
+  }
+  function shiftTimers(ms, includePlayer) {
+    Bots.list.forEach((b) => {
+      if (typeof b.lastShot === "number") b.lastShot += ms;
+      if (typeof b.respawnAt === "number") b.respawnAt += ms;
+      if (typeof b.lastSeenPlayerAt === "number") b.lastSeenPlayerAt += ms;
+    });
+    if (includePlayer) { Player.reloadStart += ms; Player.lastShotTime += ms; }
+  }
+  function updateOverdrive(dt) {
+    if (!Game.overdrive) return;
+    Game.overdriveT -= dt;
+    shiftTimers((1 - OD_SCALE) * dt * 1000, false); // slows bot cooldowns/respawns to match
+    document.getElementById("sync-bar").style.width = Math.max(0, Game.overdriveT / OD_DUR * 100) + "%";
+    if (Game.overdriveT <= 0) endOverdrive();
+  }
+
+  // Robustness: stuck keys/buttons after alt-tab, auto-pause when the tab is hidden.
+  window.addEventListener("blur", () => { for (const k in keys) keys[k] = false; mouseDown = false; rightDown = false; });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden && Game.running && !Game.paused && !isMobile) document.exitPointerLock();
+  });
+  document.addEventListener("pointerlockchange", () => {
+    if (document.pointerLockElement !== canvas) { mouseDown = false; rightDown = false; }
+  });
+  const odBtn = document.getElementById("touch-overdrive");
+  if (odBtn) odBtn.addEventListener("touchstart", (e) => { e.preventDefault(); activateOverdrive(); }, { passive: false });
+
   function animate() {
     requestAnimationFrame(animate);
     const dt = Math.min(clock.getDelta(), 0.05);
+    if (Game.running && Game.paused) shiftTimers(dt * 1000, true); // pausing freezes bot timers + reload
 
     if (Game.running && !Game.paused && Player.alive !== undefined) {
       updatePlayer(dt);
       const now = performance.now();
-      Bots.list.forEach((b) => updateBot(b, dt, now));
+      updateOverdrive(dt);
+      const botDt = Game.overdrive ? dt * OD_SCALE : dt;
+      Bots.list.forEach((b) => updateBot(b, botDt, now));
       resolveBotCollisions();
       Effects.update(dt);
       updateEnemyStatusHUD(dt);
